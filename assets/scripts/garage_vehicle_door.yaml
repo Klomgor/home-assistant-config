@@ -1,0 +1,28 @@
+garage_vehicle_door_guarded:
+  alias: "Door: Garage Vehicle"
+  icon: mdi:garage-variant
+  mode: single
+  sequence:
+    - alias: "Find the person linked to the calling user"
+      variables:
+        calling_person: >-
+          {{
+            states.person
+            | selectattr('attributes.user_id', 'eq', context.user_id)
+            | map(attribute='entity_id')
+            | first
+            | default('')
+          }}
+
+    - alias: "Require caller to be cturra or anne"
+      condition: template
+      value_template: "{{ calling_person in ['person.cturra', 'person.anne'] }}"
+
+    - alias: "Require the calling person to be home"
+      condition: template
+      value_template: "{{ is_state(calling_person, 'home') }}"
+
+    - alias: "Trigger garage vehicle door opener"
+      action: switch.turn_on
+      target:
+        entity_id: switch.sw_garage_vehicledooropener

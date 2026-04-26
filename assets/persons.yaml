@@ -1,0 +1,7 @@
+## PERSONAS
+
+- name: Anne
+  id: anne
+  user_id: "6e356c22c2f746ed9a387d4a9f78b8a7"
+  device_trackers:
+    - device_tracker.iphone

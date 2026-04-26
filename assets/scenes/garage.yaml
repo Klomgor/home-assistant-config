@@ -1,12 +1,5 @@
 ## SCENES / GARAGE
 
-# simple ios integration to open/close the garage door
-- name: 'Door: Garage Vehicle'
-  icon: 'mdi:garage_variant'
-  entities:
-    switch.sw_garage_vehicledooropener:
-      state: 'on'
-
 # house door lock toggle
 - name: 'Lock: Garage Door'
   icon: 'mdi:lock-open-outline'
