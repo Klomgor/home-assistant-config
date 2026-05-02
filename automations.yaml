@@ -140,6 +140,8 @@
     - action: select.select_option
       data:
         option: simple-sparkle
+      target:
+        device_id: eb9d91558b704848eb1ef506ca600003
   mode: single
 - id: '1612292887886'
   alias: 'House: Indoor Devices off for the night check'
@@ -671,13 +673,12 @@
   mode: single
 - id: '1623889405239'
   alias: 'Garage Inside: Offer to open vehicle door on return home'
-  description: notify chris' phone when it returns home from away and offer to open
+  description: Notify Chris' phone when it returns home from away and offer to open
     the garage door.
   triggers:
-  - entity_id: device_tracker.turraphone
-    from: not_home
+  - trigger: state
+    entity_id: person.cturra
     to: home
-    trigger: state
   conditions:
   - condition: state
     entity_id: switch.sw_garage_vehicledoorcontact
@@ -689,19 +690,18 @@
       message: Would you like to open the Garage Door?
       data:
         actions:
-        - action: OPEN_DOOR
+        - action: OPEN_GARAGE_VEHICLE_DOOR
           title: Yes Please
   - wait_for_trigger:
-    - event_type: mobile_app_notification_action
+    - trigger: event
+      event_type: mobile_app_notification_action
       event_data:
-        action: OPEN_DOOR
-      trigger: event
+        action: OPEN_GARAGE_VEHICLE_DOOR
     timeout: 00:02:00
     continue_on_timeout: false
-  - action: cover.open_cover
-    target:
-      entity_id: cover.garage_vehicledoor
-    data: {}
+  - action: script.garage_vehicle_door_guarded
+    data:
+      calling_person_override: person.cturra
   mode: single
 - id: '1624131994582'
   alias: 'Garage Inside: notify when vehicle door opened'
@@ -1027,7 +1027,7 @@
     target:
       entity_id: light.blb_crawlspace_lab
     data:
-      kelvin: 4500
+      color_temp_kelvin: 4500
       brightness: 255
   mode: single
 - id: '1645572649812'
@@ -1369,17 +1369,18 @@
 - id: '1678299719527'
   alias: 'House: Reset maintenance reminders'
   description: ''
-  trigger:
-  - platform: state
-    entity_id:
+  triggers:
+  - entity_id:
     - input_boolean.crawlspace_locker_dehumidifier_reset
     - input_boolean.kitchen_dishwasher_cleaning_reset
     - input_boolean.kitchen_espresso_machine_cleaning_reset
     - input_boolean.laundry_washing_machine_cleaning_reset
     - input_boolean.hvac_filter_change_reset
+    - input_boolean.kitchen_rangehood_cleaning_reset
     to: 'on'
-  condition: []
-  action:
+    trigger: state
+  conditions: []
+  actions:
   - choose:
     - conditions:
       - condition: state
@@ -1451,6 +1452,20 @@
         data: {}
         target:
           entity_id: input_boolean.hvac_filter_change_reset
+    - conditions:
+      - condition: state
+        entity_id: input_boolean.kitchen_rangehood_cleaning_reset
+        state: 'on'
+      sequence:
+      - action: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.kitchen_rangehood_last_cleaned
+        data:
+          timestamp: '{{ now().timestamp() }}'
+      - action: input_boolean.turn_off
+        data: {}
+        target:
+          entity_id: input_boolean.kitchen_rangehood_cleaning_reset
   mode: single
 - id: '1678563729726'
   alias: 'Porch: Notify front doorbell ring'
@@ -2114,14 +2129,14 @@
           entity_id: switch.plg_sparebedroom_lamp
   mode: single
 - id: '1694408321293'
-  alias: 'House: Indoor Lights off at sunrise'
-  description: turn off indoor lights just after sunrise.
-  trigger:
-  - platform: sun
-    event: sunrise
-    offset: 00:15:00
-  condition: []
-  action:
+  alias: 'House: Indoor Lights off before sunrise'
+  description: turn off indoor lights 3 hours before sunrise.
+  triggers:
+  - event: sunrise
+    offset: -03:00:00
+    trigger: sun
+  conditions: []
+  actions:
   - action: switch.turn_off
     data: {}
     target:
