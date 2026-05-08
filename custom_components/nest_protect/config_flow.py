@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import voluptuous as vol
 from aiohttp import ClientError
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
-import voluptuous as vol
 
 from .const import (
     CONF_ACCOUNT_TYPE,
@@ -23,6 +23,12 @@ from .pynest.client import NestClient
 from .pynest.const import NEST_ENVIRONMENTS
 from .pynest.enums import Environment
 from .pynest.exceptions import BadCredentialsException
+
+DESCRIPTION_PLACEHOLDERS = {
+    "nest_url": "https://home.nest.com",
+    "issue_token_prefix": "https://accounts.google.com/o/oauth2/iframerpc?action=issueToken",
+    "accounts_url": "https://accounts.google.com/",
+}
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -45,9 +51,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if "action=issueToken" not in issue_token:
             return False
         # Verify it looks like a proper URL with query parameters
-        if "?" not in issue_token:
-            return False
-        return True
+        return "?" in issue_token
 
     @staticmethod
     def _validate_cookies(cookies: str) -> bool:
@@ -147,7 +151,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     [issue_token, cookies, email] = await self.async_validate_input(
                         user_input
                     )
-                except (TimeoutError, ClientError):
+                except TimeoutError, ClientError:
                     errors["base"] = "cannot_connect"
                 except BadCredentialsException:
                     errors["base"] = "invalid_auth"
@@ -188,6 +192,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_COOKIES): str,
                 }
             ),
+            description_placeholders=DESCRIPTION_PLACEHOLDERS,
             errors=errors,
             last_step=True,
         )
