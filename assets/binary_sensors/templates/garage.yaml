@@ -40,11 +40,11 @@
 
 # -- shelly --
 - name: 'Garage Treadmill State'
-  unique_id: 'garage_treadmill_state'
+  unique_id: 'snr_garage_treadmill_state'
   icon: 'mdi:run'
   state: >
-    {% if is_number(states('sensor.plg_garage_treadmill_energy_power')) %}
-      {{ (states('sensor.plg_garage_treadmill_energy_power') | int(default=0)) > 10 }}
+    {% if is_number(states('sensor.em_garage_treadmill_energy_power')) %}
+      {{ (states('sensor.em_garage_treadmill_energy_power') | int(default=0)) > 10 }}
     {% endif %}
 
 # -- sinopé --
