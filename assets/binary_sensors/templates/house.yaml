@@ -11,42 +11,39 @@
     }}
 
 # -- shelly em 
-# HVAC heating on/off
 - name: 'HVAC House Heating State'
   unique_id: 'hvac_house_heating_state'
+  device_class: running
+  availability: >
+    {{ is_number(states('sensor.em_crawlspace_hvac_power_1')) }}
   # power reported in watts (w)
   state: >
-    {% if is_number(states('sensor.em_crawlspace_hvac_power_1')) %}
-      {{ 
-        (states('sensor.em_crawlspace_hvac_power_1') | int(default=0)) > 170 and
-        (states('sensor.em_crawlspace_hvac_power_1') | int(default=0)) < 460 and
-        (states('sensor.hvac_ecobee_indoor_average_temperature') | int(default=20)) < 23
-      }}
-    {% endif %}
+    {% set power = states('sensor.em_crawlspace_hvac_power_1') | float(0) %}
+    {% set indoor_temp = states('sensor.hvac_ecobee_indoor_average_temperature') | float(20) %}
+    {{ power > 170 and power < 460 and indoor_temp < 22.5 }}
 
 # HVAC cooling on/off
 - name: 'HVAC House Cooling State'
   unique_id: 'hvac_house_cooling_state'
+  device_class: running
+  availability: >
+    {{ is_number(states('sensor.em_crawlspace_hvac_power_1')) }}
   # power reported in watts (w)
   state: >
-    {% if is_number(states('sensor.em_crawlspace_hvac_power_1')) %}
-      {{ 
-        (states('sensor.em_crawlspace_hvac_power_1') | int(default=0)) > 350 and
-        (states('sensor.hvac_ecobee_indoor_average_temperature') | int(default=20)) > 23
-      }}
-    {% endif %}
+    {% set power = states('sensor.em_crawlspace_hvac_power_1') | float(0) %}
+    {% set indoor_temp = states('sensor.hvac_ecobee_indoor_average_temperature') | float(20) %}
+    {{ power > 350 and indoor_temp >= 22.5 }}
 
 # HVAC fan on/off (when heating/cooling NOT running)
 - name: 'HVAC House Fan State'
   unique_id: 'hvac_house_fan_state'
+  device_class: running
+  availability: >
+    {{ is_number(states('sensor.em_crawlspace_hvac_power_1')) }}
   # power reported in watts (w)
   state: >
-    {% if is_number(states('sensor.em_crawlspace_hvac_power_1')) %}
-      {{ 
-        (states('sensor.em_crawlspace_hvac_power_1') | int(default=0)) > 40 and
-        (states('sensor.em_crawlspace_hvac_power_1') | int(default=0)) < 160
-      }}
-    {% endif %}
+    {% set power = states('sensor.em_crawlspace_hvac_power_1') | float(0) %}
+    {{ power > 40 and power < 160 }}
 
 # -- hydrohome hub --
 # bc hydro energy bridge stale updates 
