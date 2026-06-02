@@ -1,0 +1,22 @@
+## BINARY SENSORS / TEMPLATES / SHED
+
+- name: "Shed Venting Needed"
+  unique_id: shed_venting_needed
+  icon: mdi:fan-alert
+  state: >-
+    {% set shed_humidity = states('sensor.snr_shed_humidity') | float(50) %}
+    {% set outside_humidity = states('sensor.snr_outside_humidity') | float(50) %}
+    {% set shed_temp = states('sensor.snr_shed_temperature') | float(10) %}
+    {% set outside_temp = states('sensor.snr_outside_temperature') | float(10) %}
+    {% set rainy = states('weather.pitt_meadows') in [
+      'rainy',
+      'pouring',
+      'lightning-rainy',
+      'snowy-rainy',
+      'hail'
+    ] %}
+    {% set safe_to_vent = is_state('sun.sun', 'above_horizon') and not rainy and outside_temp > 0 %}
+    {% set humidity_to_remove = shed_humidity > outside_humidity + 10 %}
+    {% set heat_to_remove = shed_temp > outside_temp + 10 and shed_temp > 20 %}
+
+    {{ safe_to_vent and (humidity_to_remove or heat_to_remove) }}
