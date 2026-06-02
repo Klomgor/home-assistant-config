@@ -51,5 +51,5 @@
 - name: 'BC Hydryo Energy Bridge Stale Updates'
   unique_id: 'bc_hydro_energy_bridge_stale_updates'
   state: >
-    i{% from 'state.jinja' import is_stale %}
+    {% from 'state.jinja' import is_stale %}
     {{ is_stale(states.sensor.bc_hydro_instantaneous_demand.last_changed, 600) }}

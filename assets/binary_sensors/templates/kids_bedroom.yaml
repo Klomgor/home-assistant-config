@@ -3,9 +3,12 @@
 # -- sonoff --
 # heater running (via plug)
 - name: 'Kids Bedroom Heating State'
+  unique_id: 'kids_bedroom_heating_state'
+  device_class: running
   icon: 'mdi:radiator'
-  # power reported in watts
+  availability: >
+    {{ is_number(states('sensor.kids_room_heater_plug_energy_power')) }}
+  # power reported in watts (w)
   state: >
-    {% if is_number(states('sensor.kids_room_heater_plug_energy_power')) %}
-      {{ (states('sensor.kids_room_heater_plug_energy_power') | int(default=0)) > 10 }}
-    {% endif %}
+    {% set power = states('sensor.kids_room_heater_plug_energy_power') | float(0) %}
+    {{ power > 10 }}
