@@ -1,5 +1,24 @@
 ## SENSORS / LEGACY / OUTSIDE
 
+# temperature ranges
+- platform: statistics
+  name: 'Outside Temperature 24h Min'
+  entity_id: sensor.snr_outside_temperature
+  unique_id: outside_temperature_24h_min
+  state_characteristic: value_min
+  max_age:
+    hours: 24
+  sampling_size: 500
+
+- platform: statistics
+  name: 'Outside Temperature 24h Max'
+  entity_id: sensor.snr_outside_temperature
+  unique_id: outside_temperature_24h_max
+  state_characteristic: value_max
+  max_age:
+    hours: 24
+  sampling_size: 500
+
 # -- Purple Air (rest) --
 # air quality 2.5pm
 - platform: rest

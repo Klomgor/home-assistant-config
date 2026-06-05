@@ -1495,7 +1495,7 @@ views:
                   state_color: true
 
 
-  ## ------ CLIMATE DASHBOARD ------
+  ## ------ INDOOR CLIMATE DASHBOARD ------
   - title: Climate
     path: climate
     icon: 'mdi:home-thermometer-outline'
@@ -1972,93 +1972,646 @@ views:
               color: '#5f9bea'
               y_axis: secondary
 
-
-      ## OUTDSIDE CLIMATE CARDS
-      - type: 'custom:stack-in-card'
-        title: 'Outside'
-        <<: *entities-header-style
+  ## ------ OUTSIDE CLIMATE DASHBOARD ------
+  - title: Outside
+    path: outside
+    icon: mdi:weather-partly-cloudy
+    type: sections
+    max_columns: 2
+    sections:
+      - type: grid
         cards:
-        # WEATHER
-        - type: 'custom:simple-weather-card'
-          entity: weather.pitt_meadows
-          name: " "
-          custom:
-            - humidity: sensor.snr_outside_humidity
-            - temp: sensor.snr_outside_temperature
-          primary_info:
-            - humidity
-            - pressure
-          secondary_info:
-            - precipitation_probability
-            - wind_speed
-          card_mod:
-            style: |
-              .weather__info__title {
-                font-size: 20px;
-              }
-              ha-card.type-custom-simple-weather-card {
-                padding: 10px 10px 5px 5px;
-              }
-              :host ha-card {
-                border: none;
-              }
+          - type: heading
+            heading: Outside
+            heading_style: title
+            icon: mdi:weather-partly-cloudy
 
-        # AIR QUALITY (FROM PURPLEAIR DEVICE)
-        - type: horizontal-stack
-          cards:
-          # AQI
-          - type: 'custom:button-card'
-            entity: sensor.snr_outside_airquality_aqi
-            name: 'AQI'
-            show_state: true
-            show_icon: false
-            <<: *graph-button-card-style
-          # pm 2.5
-          - type: 'custom:button-card'
-            entity: sensor.snr_outside_mean_airquality_pm_2_5
-            name: 'PM 2.5'
-            show_state: true
-            show_icon: false
-            <<: *graph-button-card-style
-          - type: 'custom:button-card'
-            <<: *entities-style
-            color_type: blank
-        - type: 'custom:mini-graph-card'
-          entities:
-            - sensor.snr_outside_airquality_aqi
-          unit: AQI
-          name: AQI
-          hour24: true
-          show:
-              extrema: false
-              fill: fade
-              icon: false
-              labels: hover
-              labels_secondary: hover
-              name: false
-              state: false
-          height: 60
-          line_width: 1
-          points_per_hour: 6
-          hours_to_show: 24
-          color_thresholds_transition: hard
-          <<: *mini-graph-style
-          color_thresholds:
-              - value: 0
-                color: '#24b300'
-              - value: 50
-                color: '#b3b300'
-              - value: 100
-                color: '#a54f0d'
-              - value: 150
-                color: '#a21c10'
-              - value: 200
-                color: '#8c1a4b'
-              - value: 250
-                color: '#731425'
+          - type: custom:stack-in-card
+            mode: vertical
+            keep:
+              background: true
+              border_radius: true
+              box_shadow: true
+              margin: false
+            card_mod:
+              style: |
+                ha-card {
+                  border-radius: 24px;
+                  background: rgba(255,255,255,0.025);
+                  border: 1px solid rgba(255,255,255,0.075);
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+                  overflow: hidden;
+                }
+            cards:
+              - type: custom:button-card
+                entity: sensor.snr_outside_temperature
+                name: >
+                  [[[
+                    const temp = states['sensor.snr_outside_temperature']?.state ?? '—';
+                    return `${temp} °C`;
+                  ]]]
+                entity_picture: >
+                  [[[
+                    const condition = states['weather.pitt_meadows']?.state ?? 'unknown';
+                    const isNight = states['sun.sun']?.state === 'below_horizon';
 
+                    const icons = {
+                      'clear-night': 'clear-night.svg',
+                      'cloudy': 'cloudy.svg',
+                      'exceptional': 'not-available.svg',
+                      'fog': 'fog.svg',
+                      'hail': 'hail.svg',
+                      'lightning': 'thunderstorms.svg',
+                      'lightning-rainy': 'thunderstorms-rain.svg',
+                      'partlycloudy': isNight ? 'partly-cloudy-night.svg' : 'partly-cloudy-day.svg',
+                      'pouring': 'rain.svg',
+                      'rainy': 'rain.svg',
+                      'snowy': 'snow.svg',
+                      'snowy-rainy': 'sleet.svg',
+                      'sunny': isNight ? 'clear-night.svg' : 'clear-day.svg',
+                      'windy': 'wind.svg',
+                      'windy-variant': 'wind.svg'
+                    };
 
-## ------ VEHICLE DASHBOARD ------
+                    return `/local/weather-icons/meteocons/${icons[condition] ?? 'partly-cloudy-day.svg'}`;
+                  ]]]
+                show_entity_picture: true
+                show_state: false
+                show_label: true
+                label: >
+                  [[[
+                    const humidity = states['sensor.snr_outside_humidity']?.state ?? '—';
+                    const condition = states['weather.pitt_meadows']?.state ?? 'unknown';
+                    const labels = {
+                      'clear-night': 'Clear Night',
+                      'cloudy': 'Cloudy',
+                      'exceptional': 'Exceptional',
+                      'fog': 'Fog',
+                      'hail': 'Hail',
+                      'lightning': 'Lightning',
+                      'lightning-rainy': 'Lightning & Rain',
+                      'partlycloudy': 'Partly Cloudy',
+                      'pouring': 'Pouring Rain',
+                      'rainy': 'Rainy',
+                      'snowy': 'Snowy',
+                      'snowy-rainy': 'Snow & Rain',
+                      'sunny': 'Sunny',
+                      'windy': 'Windy',
+                      'windy-variant': 'Windy',
+                      'unknown': 'Unknown'
+                    };
+                    return `Outside · ${humidity}% Humidity · ${labels[condition] ?? condition}`;
+                  ]]]
+                styles:
+                  card:
+                    - min-height: 92px
+                    - padding: 16px 20px 10px 20px
+                    - border-radius: 0
+                    - background: transparent
+                    - border: none
+                    - box-shadow: none
+                  grid:
+                    - grid-template-areas: '"i n" "i l"'
+                    - grid-template-columns: 78px 1fr
+                    - grid-template-rows: min-content min-content
+                    - column-gap: 16px
+                    - align-items: center
+                  img_cell:
+                    - width: 68px
+                    - height: 68px
+                    - border-radius: 0
+                    - background: transparent
+                  entity_picture:
+                    - width: 66px
+                    - height: 66px
+                    - object-fit: contain
+                  name:
+                    - justify-self: start
+                    - font-size: 30px
+                    - font-weight: 750
+                    - letter-spacing: -0.4px
+                    - color: var(--primary-text-color)
+                    - line-height: 1.1
+                  label:
+                    - justify-self: start
+                    - font-size: 15px
+                    - opacity: 0.82
+                    - color: var(--primary-text-color)
+                    - line-height: 1.25
+
+              - type: grid
+                columns: 3
+                square: false
+                cards:
+                  - type: custom:button-card
+                    entity: sensor.pitt_meadows_chance_of_precip
+                    name: Rain
+                    entity_picture: /local/weather-icons/meteocons/raindrop.svg
+                    show_entity_picture: true
+                    show_state: true
+                    styles:
+                      card:
+                        - margin: 0 4px 8px 8px
+                        - border-radius: 0
+                        - padding: 8px 8px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 34px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 30px
+                        - height: 30px
+                        - background: transparent
+                      entity_picture:
+                        - width: 28px
+                        - height: 28px
+                        - object-fit: contain
+                      name:
+                        - justify-self: start
+                        - font-weight: 700
+                        - font-size: 14px
+                        - line-height: 1.15
+                      state:
+                        - justify-self: start
+                        - font-size: 14px
+                        - opacity: 0.86
+                        - line-height: 1.2
+
+                  - type: custom:button-card
+                    entity: sensor.pitt_meadows_wind_speed
+                    name: Wind
+                    entity_picture: /local/weather-icons/meteocons/wind.svg
+                    show_entity_picture: true
+                    show_state: true
+                    styles:
+                      card:
+                        - margin: 0 4px 8px 4px
+                        - border-radius: 0
+                        - padding: 8px 8px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 34px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 30px
+                        - height: 30px
+                        - background: transparent
+                      entity_picture:
+                        - width: 28px
+                        - height: 28px
+                        - object-fit: contain
+                      name:
+                        - justify-self: start
+                        - font-weight: 700
+                        - font-size: 14px
+                        - line-height: 1.15
+                      state:
+                        - justify-self: start
+                        - font-size: 14px
+                        - opacity: 0.86
+                        - line-height: 1.2
+
+                  - type: custom:button-card
+                    entity: sensor.pitt_meadows_pressure
+                    name: Pressure
+                    entity_picture: /local/weather-icons/meteocons/barometer.svg
+                    show_entity_picture: true
+                    show_state: true
+                    styles:
+                      card:
+                        - margin: 0 8px 8px 4px
+                        - border-radius: 0
+                        - padding: 8px 8px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 34px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 30px
+                        - height: 30px
+                        - background: transparent
+                      entity_picture:
+                        - width: 30px
+                        - height: 30px
+                        - object-fit: contain
+                      name:
+                        - justify-self: start
+                        - font-weight: 700
+                        - font-size: 14px
+                        - line-height: 1.15
+                      state:
+                        - justify-self: start
+                        - font-size: 14px
+                        - opacity: 0.86
+                        - line-height: 1.2
+
+                  - type: custom:button-card
+                    entity: sensor.snr_outside_airquality_aqi
+                    name: AQI
+                    icon: mdi:air-filter
+                    show_state: true
+                    styles:
+                      card:
+                        - margin: 0 4px 12px 8px
+                        - border-radius: 0
+                        - padding: 8px 8px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 34px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 30px
+                        - height: 30px
+                        - background: transparent
+                      icon:
+                        - width: 26px
+                        - color: '#66bb6a'
+                      name:
+                        - justify-self: start
+                        - font-weight: 700
+                        - font-size: 14px
+                        - line-height: 1.15
+                      state:
+                        - justify-self: start
+                        - font-size: 14px
+                        - opacity: 0.86
+                        - line-height: 1.2
+
+                  - type: custom:button-card
+                    entity: sensor.snr_outside_airquality_pm_2_5
+                    name: PM2.5
+                    icon: mdi:molecule
+                    show_state: true
+                    styles:
+                      card:
+                        - margin: 0 4px 12px 4px
+                        - border-radius: 0
+                        - padding: 8px 8px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 34px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 30px
+                        - height: 30px
+                        - background: transparent
+                      icon:
+                        - width: 26px
+                        - color: '#b39ddb'
+                      name:
+                        - justify-self: start
+                        - font-weight: 700
+                        - font-size: 14px
+                        - line-height: 1.15
+                      state:
+                        - justify-self: start
+                        - font-size: 14px
+                        - opacity: 0.86
+                        - line-height: 1.2
+
+                  - type: custom:button-card
+                    entity: sensor.pitt_meadows_uv_index
+                    name: UV
+                    entity_picture: /local/weather-icons/meteocons/uv-index.svg
+                    show_entity_picture: true
+                    show_state: true
+                    styles:
+                      card:
+                        - margin: 0 8px 12px 4px
+                        - border-radius: 0
+                        - padding: 8px 8px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 34px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 30px
+                        - height: 30px
+                        - background: transparent
+                      entity_picture:
+                        - width: 30px
+                        - height: 30px
+                        - object-fit: contain
+                      name:
+                        - justify-self: start
+                        - font-weight: 700
+                        - font-size: 14px
+                        - line-height: 1.15
+                      state:
+                        - justify-self: start
+                        - font-size: 14px
+                        - opacity: 0.86
+                        - line-height: 1.2
+
+          - type: heading
+            heading: Sun & Moon
+            heading_style: subtitle
+            icon: mdi:weather-sunset
+
+          - type: custom:stack-in-card
+            mode: vertical
+            keep:
+              background: true
+              border_radius: true
+              box_shadow: true
+              margin: false
+            card_mod:
+              style: |
+                ha-card {
+                  border-radius: 24px;
+                  background: rgba(255,255,255,0.025);
+                  border: 1px solid rgba(255,255,255,0.075);
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+                  overflow: hidden;
+                }
+            cards:
+              - type: grid
+                columns: 3
+                square: false
+                cards:
+                  - type: custom:button-card
+                    entity: sensor.sunrise_time
+                    name: Sunrise
+                    entity_picture: /local/weather-icons/meteocons/sunrise.svg
+                    show_entity_picture: true
+                    show_state: true
+                    styles:
+                      card:
+                        - margin: 8px 4px 8px 8px
+                        - border-radius: 0
+                        - padding: 10px 8px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 38px 1fr
+                      img_cell:
+                        - width: 34px
+                        - height: 34px
+                        - background: transparent
+                      entity_picture:
+                        - width: 34px
+                        - height: 34px
+                        - object-fit: contain
+                      name:
+                        - justify-self: start
+                        - font-weight: 700
+                        - font-size: 14px
+                      state:
+                        - justify-self: start
+                        - font-size: 14px
+                        - opacity: 0.86
+
+                  - type: custom:button-card
+                    entity: sensor.sunset_time
+                    name: Sunset
+                    entity_picture: /local/weather-icons/meteocons/sunset.svg
+                    show_entity_picture: true
+                    show_state: true
+                    styles:
+                      card:
+                        - margin: 8px 4px 8px 4px
+                        - border-radius: 0
+                        - padding: 10px 8px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 38px 1fr
+                      img_cell:
+                        - width: 34px
+                        - height: 34px
+                        - background: transparent
+                      entity_picture:
+                        - width: 34px
+                        - height: 34px
+                        - object-fit: contain
+                      name:
+                        - justify-self: start
+                        - font-weight: 700
+                        - font-size: 14px
+                      state:
+                        - justify-self: start
+                        - font-size: 14px
+                        - opacity: 0.86
+
+                  - type: custom:button-card
+                    entity: sensor.moon_phase_friendly
+                    name: Moon
+                    entity_picture: >
+                      [[[
+                        const moon = states['sensor.moon_phase']?.state ?? states['sensor.moon_phase_friendly']?.state ?? 'unknown';
+
+                        const icons = {
+                          'new_moon': 'moon-new.svg',
+                          'full_moon': 'moon-full.svg',
+                          'waning_gibbous': 'moon-waning-gibbous.svg',
+                          'waning_crescent': 'moon-waning-crescent.svg',
+                          'New Moon': 'moon-new.svg',
+                          'Full Moon': 'moon-full.svg',
+                          'Waning Gibbous': 'moon-waning-gibbous.svg',
+                          'Waning Crescent': 'moon-waning-crescent.svg'
+                        };
+
+                        return `/local/weather-icons/meteocons/${icons[moon] ?? 'moon-waning-gibbous.svg'}`;
+                      ]]]
+                    show_entity_picture: true
+                    show_state: true
+                    styles:
+                      card:
+                        - margin: 8px 8px 8px 4px
+                        - border-radius: 0
+                        - padding: 10px 8px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 38px 1fr
+                      img_cell:
+                        - width: 34px
+                        - height: 34px
+                        - background: transparent
+                      entity_picture:
+                        - width: 34px
+                        - height: 34px
+                        - object-fit: contain
+                      name:
+                        - justify-self: start
+                        - font-weight: 700
+                        - font-size: 14px
+                      state:
+                        - justify-self: start
+                        - font-size: 14px
+                        - opacity: 0.86
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Forecast
+            heading_style: subtitle
+            icon: mdi:calendar-clock
+
+          - type: custom:stack-in-card
+            mode: vertical
+            keep:
+              background: true
+              border_radius: true
+              box_shadow: true
+              margin: false
+            card_mod:
+              style: |
+                ha-card {
+                  border-radius: 22px;
+                  background: rgba(255,255,255,0.025);
+                  border: 1px solid rgba(255,255,255,0.075);
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+                  overflow: hidden;
+                }
+            cards:
+              - type: weather-forecast
+                entity: weather.pitt_meadows
+                forecast_type: hourly
+                show_current: false
+                show_forecast: true
+                card_mod:
+                  style: |
+                    ha-card {
+                      background: transparent;
+                      border: none;
+                      box-shadow: none;
+                      padding-top: 10px !important;
+                      padding-bottom: 4px !important;
+                    }
+
+          - type: heading
+            heading: Temperature History · 24h
+            heading_style: subtitle
+            icon: mdi:thermometer
+
+          - type: custom:stack-in-card
+            mode: vertical
+            keep:
+              background: true
+              border_radius: true
+              box_shadow: true
+              margin: false
+            card_mod:
+              style: |
+                ha-card {
+                  border-radius: 24px;
+                  background: rgba(255,255,255,0.025);
+                  border: 1px solid rgba(255,255,255,0.075);
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+                  overflow: hidden;
+                }
+            cards:
+              - type: custom:button-card
+                entity: sensor.outside_temperature_24h_min
+                show_icon: false
+                show_name: false
+                show_state: false
+                custom_fields:
+                  range: >
+                    [[[
+                      const min = states['sensor.outside_temperature_24h_min']?.state ?? '—';
+                      const max = states['sensor.outside_temperature_24h_max']?.state ?? '—';
+                      return `
+                        <div class="range-row">
+                          <span><span class="range-label">Min</span> ${min} °C</span>
+                          <span class="range-divider">•</span>
+                          <span><span class="range-label">Max</span> ${max} °C</span>
+                        </div>
+                      `;
+                    ]]]
+                styles:
+                  card:
+                    - padding: 8px 16px 0 16px
+                    - background: transparent
+                    - border: none
+                    - box-shadow: none
+                  custom_fields:
+                    range:
+                      - width: 100%
+                extra_styles: |
+                  .range-row {
+                    display: flex;
+                    justify-content: flex-end;
+                    align-items: center;
+                    gap: 10px;
+                    font-size: 13px;
+                    opacity: 0.86;
+                    white-space: nowrap;
+                  }
+
+                  .range-label {
+                    opacity: 0.58;
+                    font-weight: 700;
+                    margin-right: 4px;
+                  }
+
+                  .range-divider {
+                    opacity: 0.35;
+                  }
+
+              - type: custom:mini-graph-card
+                name: Outdoor Temperature
+                icon: mdi:thermometer
+                entities:
+                  - entity: sensor.snr_outside_temperature
+                    name: Outside
+                hours_to_show: 24
+                points_per_hour: 2
+                line_width: 1
+                height: 110
+                show:
+                  extrema: false
+                  fill: fade
+                  icon: false
+                  name: false
+                  state: false
+                  legend: false
+                  labels: false
+                color_thresholds:
+                  - value: 0
+                    color: "#42a5f5"
+                  - value: 15
+                    color: "#66bb6a"
+                  - value: 24
+                    color: "#ffa726"
+                  - value: 30
+                    color: "#ef5350"
+                card_mod:
+                  style: |
+                    ha-card {
+                      background: transparent;
+                      border: none;
+                      box-shadow: none;
+                      padding-top: 0px !important;
+                      margin-top: -6px;
+                    }
+
+  ## ------ VEHICLE DASHBOARD ------
   - title: Truck
     path: truck
     icon: 'mdi:car-info'
