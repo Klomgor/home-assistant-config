@@ -1494,483 +1494,1261 @@ views:
                   icon: 'mdi:light-flood-down'
                   state_color: true
 
-
-  ## ------ INDOOR CLIMATE DASHBOARD ------
+  ## ------ NEW INDOOR CLIMATE ------
   - title: Climate
     path: climate
-    icon: 'mdi:home-thermometer-outline'
+    icon: mdi:home-thermometer-outline
+    type: sections
+    max_columns: 3
     badges: []
-    cards:
+
+    sections:
       # HOUSE INDOOR CLIMATE CARDS
-      - type: 'custom:stack-in-card'
-        title: 'House'
-        <<: *entities-header-style
+      - type: grid
         cards:
-        - type: horizontal-stack
-          cards:
-          # house avg temperature
-          - type: 'custom:button-card'
-            entity: sensor.hvac_ecobee_indoor_average_temperature
-            name: Temperature
-            show_units: false
-            show_state: true
-            show_icon: false
-            <<: *graph-header-button-card-style
-          # house avg humidity
-          - type: 'custom:button-card'
-            entity: sensor.indoor_mean_humidity
-            name: Humidity
-            show_units: false
-            show_state: true
-            show_icon: false
-            <<: *graph-header-button-card-style
-          # house avg air quality: fine particles
-          - type: 'custom:button-card'
-            entity: sensor.indoor_mean_air_quality_calculation
-            name: 'PM 2.5'
-            show_units: false
-            show_state: true
-            show_icon: false
-            <<: *graph-header-button-card-style
-          # house avg air quality: carbon dioxide
-          - type: 'custom:button-card'
-            entity: sensor.indoor_mean_co2_rounded
-            name: 'CO2'
-            show_units: false
-            show_state: true
-            show_icon: false
-            <<: *graph-header-button-card-style
+          - type: heading
+            heading: House
+            heading_style: title
+            icon: mdi:home-thermometer-outline
 
-        ## INDOOR TEMPERATURE CARDS
-        # row 1
-        - type: horizontal-stack
-          cards:
-          # upstairs hallway
-          - type: 'custom:button-card'
-            entity: sensor.uptairs_hallway_temperature
-            name: > 
-              [[[
-                var occupied = states['binary_sensor.nest_protect_upstairs_occupancy'].state
-                return 'Upstairs Hall' + (occupied == 'on' ? ' ⦿': '');
-              ]]]
-            show_state: true
-            show_icon: false
-            <<: *climate-button-style
+          # HOUSE SUMMARY AND ROOM TEMPERATURES CARD
+          - type: custom:stack-in-card
+            mode: vertical
+            keep:
+              background: true
+              border_radius: true
+              box_shadow: true
+              margin: false
+            card_mod:
+              style: |
+                ha-card {
+                  border-radius: 24px;
+                  background: rgba(255,255,255,0.025);
+                  border: 1px solid rgba(255,255,255,0.075);
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+                  overflow: hidden;
+                }
+            cards:
+              # HOUSE HERO CARD
+              - type: custom:button-card
+                entity: sensor.hvac_ecobee_indoor_average_temperature
+                name: >
+                  [[[
+                    const temp = states['sensor.hvac_ecobee_indoor_average_temperature']?.state ?? '—';
+                    return `${temp} °C`;
+                  ]]]
+                icon: mdi:home-thermometer-outline
+                show_state: false
+                show_label: true
+                label: >
+                  [[[
+                    const hvac = states['sensor.house_hvac_display_state']?.state ?? 'Idle';
+                    const spreadRaw = states['sensor.living_space_temperature_spread']?.state;
 
-          # main bedroom
-          - type: 'custom:button-card'
-            entity: sensor.main_bedroom_mean_temperature_calculation
-            name: >
-              [[[
-                var occupied = states['binary_sensor.main_bedroom_presence_sensor_timeout'].state
-                return 'Main Bedroom' + (occupied == 'on' ? ' ⦿': '');
-              ]]]
-            show_state: true
-            show_icon: false
-            <<: *climate-button-style
+                    let spreadText = 'Spread —';
+                    let spreadColor = 'rgba(220,220,220,0.72)';
 
-          # kids room
-          - type: 'custom:button-card'
-            entity: sensor.kids_bedroom_mean_temperature_calculation
-            name: 'Kids Bedroom'
-            show_state: true
-            show_icon: false
-            <<: *climate-button-style
+                    if (
+                      spreadRaw !== undefined &&
+                      spreadRaw !== null &&
+                      spreadRaw !== 'unknown' &&
+                      spreadRaw !== 'unavailable'
+                    ) {
+                      const spread = parseFloat(spreadRaw);
 
-          # spare bedroom
-          - type: 'custom:button-card'
-            entity: sensor.snr_sparebedroom_climatedisplay_temperature
-            name: 'Spare Bedroom'
-            show_state: true
-            show_icon: false
-            <<: *climate-button-style
+                      if (!isNaN(spread)) {
+                        spreadText = `Spread ${spread.toFixed(1)} °C`;
 
-        # TEMPERATURE BUTTONS
-        # row 2
-        - type: horizontal-stack
-          cards:
-          # kitchen
-          - type: 'custom:button-card'
-            entity: sensor.kitchen_mean_temperature_calculation
-            name: > 
-              [[[
-                var occupied = states['binary_sensor.dining_room_occupancy'].state
-                return 'Kitchen' + (occupied == 'on' ? ' ⦿': '');
-              ]]]
-            show_state: true
-            show_icon: false
-            <<: *climate-button-style
+                        if (spread <= 2.0) {
+                          spreadColor = 'rgba(255,255,255,0.72)';
+                        } else if (spread < 3.5) {
+                          spreadColor = 'rgba(255, 224, 130, 0.68)';
+                        } else {
+                          spreadColor = 'rgba(255, 204, 188, 0.72)';
+                        }
+                      }
+                    }
 
-          # family room
-          - type: 'custom:button-card'
-            entity: sensor.snr_familyroom_climatedisplay_temperature
-            name: 'Family Room'
-            show_state: true
-            show_icon: false
-            <<: *climate-button-style
+                    return `House · ${hvac} · <span style="color:${spreadColor}; font-weight:600;">${spreadText}</span>`;
+                  ]]]
+                styles:
+                  card:
+                    - min-height: 72px
+                    - padding: 12px 16px 2px 16px
+                    - border-radius: 0
+                    - background: transparent
+                    - border: none
+                    - box-shadow: none
+                  grid:
+                    - grid-template-areas: '"i n" "i l"'
+                    - grid-template-columns: 58px 1fr
+                    - grid-template-rows: min-content min-content
+                    - column-gap: 12px
+                    - align-items: center
+                  img_cell:
+                    - width: 48px
+                    - height: 48px
+                    - border-radius: 0
+                    - background: transparent
+                  icon:
+                    - width: 38px
+                    - color: >
+                        [[[
+                          const hvac = states['sensor.house_hvac_display_state']?.state ?? 'Idle';
+                          if (hvac === 'Cooling') return '#71b7f4';
+                          if (hvac === 'Heating') return '#ffad33';
+                          if (hvac === 'Fan') return '#90caf9';
+                          return '#ffca28';
+                        ]]]
+                  name:
+                    - justify-self: start
+                    - font-size: 30px
+                    - font-weight: 750
+                    - letter-spacing: -0.4px
+                    - color: var(--primary-text-color)
+                    - line-height: 1.05
+                  label:
+                    - justify-self: start
+                    - font-size: 15px
+                    - opacity: 0.82
+                    - color: var(--primary-text-color)
+                    - line-height: 1.2
 
-          # office
-          - type: 'custom:button-card'
-            entity: sensor.snr_office_airquality_temperature
-            name: >
-              [[[
-                var occupied = states['binary_sensor.office_presence_sensor_timeout'].state
-                return 'Office' + (occupied == 'on' ? ' ⦿': '');
-              ]]]
-            show_state: true
-            show_icon: false
-            <<: *climate-button-style
+              # HOUSE AIR QUALITY SUMMARY CARDS
+              - type: grid
+                columns: 3
+                square: false
+                cards:
+                  # house avg humidity
+                  - type: custom:button-card
+                    entity: sensor.indoor_mean_humidity
+                    name: Humidity
+                    icon: mdi:water-percent
+                    show_state: true
+                    show_icon: true
+                    styles:
+                      card:
+                        - margin: 0 2px 4px 8px
+                        - padding: 6px 4px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 32px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 28px
+                        - height: 28px
+                        - background: transparent
+                      icon:
+                        - width: 24px
+                        - color: '#5f9bea'
+                      name:
+                        - justify-self: start
+                        - font-size: 13px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 16px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
 
-          # crawlspace
-          - type: 'custom:button-card'
-            entity: sensor.snr_crawlspace_climatedisplay_temperature
-            name: Crawlspace
-            show_state: true
-            show_icon: false
-            <<: *climate-button-style
+                  # house avg air quality: fine particles
+                  - type: custom:button-card
+                    entity: sensor.indoor_mean_air_quality_calculation
+                    name: PM2.5
+                    icon: mdi:molecule
+                    show_state: true
+                    show_icon: true
+                    styles:
+                      card:
+                        - margin: 0 2px 4px 2px
+                        - padding: 6px 4px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 32px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 28px
+                        - height: 28px
+                        - background: transparent
+                      icon:
+                        - width: 24px
+                        - color: '#b39ddb'
+                      name:
+                        - justify-self: start
+                        - font-size: 13px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 16px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
 
-        # INDOOR TEMPERATURE GRAPHS
-        - type: 'custom:mini-graph-card'
-          show:
-            extrema: false
-            fill: fade
-            icon: false
-            labels: hover
-            labels_secondary: hover
-            name: false
-            state: false
-          height: 100
-          line_width: 1
-          hours_to_show: 24
-          points_per_hour: 3
-          group: true
-          lower_bound_secondary: 30
-          upper_bound_secondary: 70
-          font_size: 85
-          <<: *mini-graph-style
-          entities:
-            # indoor average temperature
-            - entity: sensor.hvac_ecobee_indoor_average_temperature
-              show_fill: false
-              show_points: false
-              show_legend: false
-              color: '#5b4461'              
-            # temerature in downstairs family room
-            - entity: sensor.family_room_temperature
-              name: Downstairs
-              show_fill: false
-              show_points: false
-              color: '#eb3b5a'
-            # temerature at upstairs hallway ecobee remote sensor
-            - entity: sensor.uptairs_hallway_temperature
-              name: Upstairs
-              show_fill: false
-              show_points: false
-              color: '#e6b800'
-            # temerature at crawlspace aqara sensor
-            - entity: sensor.snr_crawlspace_climatedisplay_temperature
-              name: Crawlspace
-              show_fill: false
-              show_points: false
-              color: '#21b064'
-            # humidity (mean from all climate sensors)
-            - entity: sensor.indoor_mean_humidity
-              name: Humidity
-              show_fill: false
-              state_adaptive_color: true
-              color: '#5f9bea'
-              show_points: false
-              y_axis: secondary
+                  # house avg air quality: carbon dioxide
+                  - type: custom:button-card
+                    entity: sensor.indoor_mean_co2_rounded
+                    name: CO2
+                    icon: mdi:molecule-co2
+                    show_state: true
+                    show_icon: true
+                    styles:
+                      card:
+                        - margin: 0 8px 4px 2px
+                        - padding: 6px 4px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 32px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 28px
+                        - height: 28px
+                        - background: transparent
+                      icon:
+                        - width: 24px
+                        - color: '#90a4ae'
+                      name:
+                        - justify-self: start
+                        - font-size: 13px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 16px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
 
-        # INDOOR HVAC FUNCTION GRAPHS
-        - type: 'custom:mini-graph-card'
-          show:
-            extrema: false
-            fill: fade
-            icon: false
-            labels: hover
-            labels_secondary: hover
-            name: false
-            state: false
-          height: 20
-          line_width: 1
-          hours_to_show: 24
-          points_per_hour: 60
-          group: true
-          <<: *mini-graph-style
-          entities:
-            # cooling on/off
-            - entity: binary_sensor.hvac_house_cooling_state
-              name: Cooling
-              color: '#71b7f4'
-              show_legend: false
-              show_line: false
-              show_points: false
-            # heating on/off
-            - entity: binary_sensor.hvac_house_heating_state
-              name: Heating
-              color: '#ffad33'
-              show_legend: false
-              show_line: false
-              show_points: false
-            # hvac fan on/off
-            - entity: binary_sensor.hvac_house_fan_state
-              name: Fan
-              color: '#ffffff'
-              show_legend: true
-              show_line: false
-              show_points: false
-          state_map:
-            - value: 'off'
-            - value: 'on'
+              # UPSTAIRS ROOM TEMPERATURE CARDS
+              - type: grid
+                columns: 4
+                square: false
+                cards:
+                  # upstairs hallway
+                  - type: custom:button-card
+                    entity: sensor.uptairs_hallway_temperature
+                    name: >
+                      [[[
+                        var occupied = states['binary_sensor.nest_protect_upstairs_occupancy'].state;
+                        return 'Upstairs Hall' + (occupied == 'on' ? ' ⦿': '');
+                      ]]]
+                    show_state: true
+                    show_icon: false
+                    styles:
+                      card:
+                        - margin: 4px 1px 0 4px
+                        - padding: 6px 2px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      name:
+                        - font-size: 12px
+                        - font-weight: 650
+                        - line-height: 1.1
+                        - opacity: 0.82
+                        - white-space: normal
+                        - text-overflow: unset
+                        - overflow: visible
+                      state:
+                        - font-size: 18px
+                        - font-weight: 500
+                        - line-height: 1.15
 
-      ## GARAGE CLIMATE CARDS
-      - type: 'custom:stack-in-card'
-        title: 'Garage'
-        <<: *entities-header-style
+                  # main bedroom
+                  - type: custom:button-card
+                    entity: sensor.main_bedroom_mean_temperature_calculation
+                    name: >
+                      [[[
+                        var occupied = states['binary_sensor.main_bedroom_presence_sensor_timeout'].state;
+                        return 'Main Bedroom' + (occupied == 'on' ? ' ⦿': '');
+                      ]]]
+                    show_state: true
+                    show_icon: false
+                    styles:
+                      card:
+                        - margin: 4px 1px 0 1px
+                        - padding: 6px 2px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      name:
+                        - font-size: 12px
+                        - font-weight: 650
+                        - line-height: 1.1
+                        - opacity: 0.82
+                        - white-space: normal
+                        - text-overflow: unset
+                        - overflow: visible
+                      state:
+                        - font-size: 18px
+                        - font-weight: 500
+                        - line-height: 1.15
+
+                  # kids bedroom
+                  - type: custom:button-card
+                    entity: sensor.kids_bedroom_mean_temperature_calculation
+                    name: Kids Bedroom
+                    show_state: true
+                    show_icon: false
+                    styles:
+                      card:
+                        - margin: 4px 1px 0 1px
+                        - padding: 6px 2px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      name:
+                        - font-size: 12px
+                        - font-weight: 650
+                        - line-height: 1.1
+                        - opacity: 0.82
+                        - white-space: normal
+                        - text-overflow: unset
+                        - overflow: visible
+                      state:
+                        - font-size: 18px
+                        - font-weight: 500
+                        - line-height: 1.15
+
+                  # spare bedroom
+                  - type: custom:button-card
+                    entity: sensor.snr_sparebedroom_climatedisplay_temperature
+                    name: Spare Room
+                    show_state: true
+                    show_icon: false
+                    styles:
+                      card:
+                        - margin: 4px 4px 0 1px
+                        - padding: 6px 2px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      name:
+                        - font-size: 12px
+                        - font-weight: 650
+                        - line-height: 1.1
+                        - opacity: 0.82
+                        - white-space: normal
+                        - text-overflow: unset
+                        - overflow: visible
+                      state:
+                        - font-size: 18px
+                        - font-weight: 500
+                        - line-height: 1.15
+
+              # MAIN FLOOR AND UTILITY ROOM TEMPERATURE CARDS
+              - type: grid
+                columns: 4
+                square: false
+                cards:
+                  # kitchen
+                  - type: custom:button-card
+                    entity: sensor.kitchen_mean_temperature_calculation
+                    name: >
+                      [[[
+                        var occupied = states['binary_sensor.dining_room_occupancy'].state;
+                        return 'Kitchen' + (occupied == 'on' ? ' ⦿': '');
+                      ]]]
+                    show_state: true
+                    show_icon: false
+                    styles:
+                      card:
+                        - margin: 0 1px 10px 4px
+                        - padding: 6px 2px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      name:
+                        - font-size: 12px
+                        - font-weight: 650
+                        - line-height: 1.1
+                        - opacity: 0.82
+                        - white-space: normal
+                        - text-overflow: unset
+                        - overflow: visible
+                      state:
+                        - font-size: 18px
+                        - font-weight: 500
+                        - line-height: 1.15
+
+                  # family room
+                  - type: custom:button-card
+                    entity: sensor.snr_familyroom_climatedisplay_temperature
+                    name: Family Room
+                    show_state: true
+                    show_icon: false
+                    styles:
+                      card:
+                        - margin: 0 1px 10px 1px
+                        - padding: 6px 2px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      name:
+                        - font-size: 12px
+                        - font-weight: 650
+                        - line-height: 1.1
+                        - opacity: 0.82
+                        - white-space: normal
+                        - text-overflow: unset
+                        - overflow: visible
+                      state:
+                        - font-size: 18px
+                        - font-weight: 500
+                        - line-height: 1.15
+
+                  # office
+                  - type: custom:button-card
+                    entity: sensor.snr_office_airquality_temperature
+                    name: >
+                      [[[
+                        var occupied = states['binary_sensor.office_presence_sensor_timeout'].state;
+                        return 'Office' + (occupied == 'on' ? ' ⦿': '');
+                      ]]]
+                    show_state: true
+                    show_icon: false
+                    styles:
+                      card:
+                        - margin: 0 1px 10px 1px
+                        - padding: 6px 2px
+                        - background: |
+                            [[[
+                              const occupied = states['binary_sensor.office_presence_sensor_timeout']?.state;
+                              return occupied === 'on' ? 'rgba(255,255,255,0.025)' : 'transparent';
+                            ]]]
+                        - border: none
+                        - box-shadow: none
+                      name:
+                        - font-size: 12px
+                        - font-weight: 650
+                        - line-height: 1.1
+                        - opacity: 0.82
+                        - white-space: normal
+                        - text-overflow: unset
+                        - overflow: visible
+                      state:
+                        - font-size: 18px
+                        - font-weight: 500
+                        - line-height: 1.15
+
+                  # crawlspace
+                  - type: custom:button-card
+                    entity: sensor.snr_crawlspace_climatedisplay_temperature
+                    name: Crawlspace
+                    show_state: true
+                    show_icon: false
+                    styles:
+                      card:
+                        - margin: 0 4px 10px 1px
+                        - padding: 6px 2px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      name:
+                        - font-size: 12px
+                        - font-weight: 650
+                        - line-height: 1.1
+                        - opacity: 0.82
+                        - white-space: normal
+                        - text-overflow: unset
+                        - overflow: visible
+                      state:
+                        - font-size: 18px
+                        - font-weight: 500
+                        - line-height: 1.15
+
+          # HOUSE CLIMATE HISTORY GRAPH CARD
+          - type: heading
+            heading: House Climate History · 24h
+            heading_style: subtitle
+            icon: mdi:chart-line
+
+          - type: custom:stack-in-card
+            mode: vertical
+            keep:
+              background: true
+              border_radius: true
+              box_shadow: true
+              margin: false
+            card_mod:
+              style: |
+                ha-card {
+                  border-radius: 24px;
+                  background: rgba(255,255,255,0.025);
+                  border: 1px solid rgba(255,255,255,0.075);
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+                  overflow: hidden;
+                }
+            cards:
+              # INDOOR TEMPERATURE AND HUMIDITY GRAPH CARD
+              - type: custom:mini-graph-card
+                show:
+                  extrema: false
+                  fill: fade
+                  icon: false
+                  labels: hover
+                  labels_secondary: hover
+                  name: false
+                  state: false
+                  legend: true
+                height: 125
+                line_width: 1
+                hours_to_show: 24
+                points_per_hour: 3
+                group: true
+                lower_bound_secondary: 30
+                upper_bound_secondary: 70
+                font_size: 85
+                entities:
+                  # temperature in downstairs family room
+                  - entity: sensor.family_room_temperature
+                    name: Downstairs
+                    show_fill: false
+                    show_points: false
+                    color: '#eb3b5a'
+
+                  # temperature at upstairs hallway ecobee remote sensor
+                  - entity: sensor.uptairs_hallway_temperature
+                    name: Upstairs
+                    show_fill: false
+                    show_points: false
+                    color: '#e6b800'
+
+                  # temperature at crawlspace aqara sensor
+                  - entity: sensor.snr_crawlspace_climatedisplay_temperature
+                    name: Crawlspace
+                    show_fill: false
+                    show_points: false
+                    color: '#21b064'
+
+                  # humidity mean from all indoor climate sensors
+                  - entity: sensor.indoor_mean_humidity
+                    name: Humidity
+                    show_fill: false
+                    state_adaptive_color: true
+                    color: '#5f9bea'
+                    show_points: false
+                    y_axis: secondary
+                card_mod:
+                  style: |
+                    ha-card {
+                      background: transparent;
+                      border: none;
+                      box-shadow: none;
+                      padding-top: 4px !important;
+                    }
+
+              # INDOOR HVAC FUNCTION GRAPH CARD
+              - type: custom:mini-graph-card
+                show:
+                  extrema: false
+                  fill: fade
+                  icon: false
+                  labels: hover
+                  labels_secondary: hover
+                  name: false
+                  state: false
+                height: 22
+                line_width: 1
+                hours_to_show: 24
+                points_per_hour: 60
+                group: true
+                entities:
+                  # cooling on/off
+                  - entity: binary_sensor.hvac_house_cooling_state
+                    name: Cooling
+                    color: '#71b7f4'
+                    show_legend: false
+                    show_line: false
+                    show_points: false
+
+                  # heating on/off
+                  - entity: binary_sensor.hvac_house_heating_state
+                    name: Heating
+                    color: '#ffad33'
+                    show_legend: false
+                    show_line: false
+                    show_points: false
+
+                  # HVAC fan on/off
+                  - entity: binary_sensor.hvac_house_fan_state
+                    name: Fan
+                    color: '#ffffff'
+                    show_legend: true
+                    show_line: false
+                    show_points: false
+                state_map:
+                  - value: 'off'
+                  - value: 'on'
+                card_mod:
+                  style: |
+                    ha-card {
+                      background: transparent;
+                      border: none;
+                      box-shadow: none;
+                      margin-top: -8px;
+                    }
+
+      # GARAGE CLIMATE CARDS
+      - type: grid
         cards:
-        - type: horizontal-stack
-          cards:
-          # garage temperature
-          - type: 'custom:button-card'
-            entity: sensor.garage_mean_temperature_calculation
-            name: Temperature
-            show_state: true
-            show_icon: false
-            <<: *graph-button-card-style
-          # garage humidity
-          - type: 'custom:button-card'
-            entity: sensor.garage_climate_humidity_rounded
-            name: Humidity
-            show_state: true
-            show_icon: false
-            <<: *graph-button-card-style
-          # garage door
-          - type: 'custom:button-card'
-            entity: cover.garage_vehicledoor
-            name: Door
-            show_state: true
-            state_display: |
-              [[[
-                if (entity.state == 'open') return 'Open';
-                else return 'Closed';
-              ]]]
-            show_icon: false
-            <<: *graph-button-card-style
+          - type: heading
+            heading: Garage
+            heading_style: title
+            icon: mdi:garage-variant
 
-        # GARAGE TEMPERATURE GRAPHS
-        - type: 'custom:mini-graph-card'
-          show:
-            extrema: false
-            icon: false
-            labels: hover
-            labels_secondary: hover
-            name: false
-            state: false
-          height: 60
-          line_width: 1
-          hours_to_show: 24
-          points_per_hour: 4
-          lower_bound_secondary: 30
-          upper_bound_secondary: 75
-          group: true
-          <<: *mini-graph-style
-          <<: *temp-graph-color_thresholds
-          entities:
-            # temerature
-            - entity: sensor.garage_mean_temperature_calculation
-              name: "Temperature"
-              show_fill: false
-              show_legend: false
-              state_adaptive_color: true
-            # humidity
-            - entity: sensor.garage_climate_humidity_rounded
-              name: Humidity
-              line_width: 1
-              show_legend: false
-              show_fill: false
-              state_adaptive_color: true
-              color: '#5f9bea'
-              y_axis: secondary
+          # GARAGE SUMMARY AND HISTORY CARD
+          - type: custom:stack-in-card
+            mode: vertical
+            keep:
+              background: true
+              border_radius: true
+              box_shadow: true
+              margin: false
+            card_mod:
+              style: |
+                ha-card {
+                  border-radius: 24px;
+                  background: rgba(255,255,255,0.025);
+                  border: 1px solid rgba(255,255,255,0.075);
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+                  overflow: hidden;
+                }
+            cards:
+              # GARAGE SUMMARY CARDS
+              - type: grid
+                columns: 3
+                square: false
+                cards:
+                  # garage temperature
+                  - type: custom:button-card
+                    entity: sensor.garage_mean_temperature_calculation
+                    name: Temperature
+                    icon: mdi:thermometer
+                    show_state: true
+                    show_icon: true
+                    styles:
+                      card:
+                        - margin: 10px 2px 6px 8px
+                        - padding: 6px 4px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 32px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 28px
+                        - height: 28px
+                        - background: transparent
+                      icon:
+                        - width: 24px
+                        - color: '#ffca28'
+                      name:
+                        - justify-self: start
+                        - font-size: 13px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 16px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
 
-        # GARAGE FUNCTION GRAPHS
-        - type: 'custom:mini-graph-card'
-          show:
-            extrema: false
-            fill: fade
-            icon: false
-            labels: hover
-            labels_secondary: hover
-            name: false
-            state: false
-          height: 20
-          line_width: 1
-          hours_to_show: 24
-          points_per_hour: 60
-          group: true
-          <<: *mini-graph-style
-          entities:
-            # garage car door opened/closed
-            - entity: binary_sensor.garage_vehicle_door_contact_state
-              name: 'Vehicle Door'
-              color: '#ffffff'
-              show_legend: true
-              show_line: false
-              show_points: false
-            # garage heater on/off
-            - entity: binary_sensor.hvac_garage_heating_state
-              name: Heating
-              color: '#ffad33'
-              show_legend: false
-              show_line: false
-              show_points: false
-            # garage dehumidifier on/off
-            - entity: binary_sensor.garage_dehumidifier_state
-              name: 'Dehumidifier'
-              color: '#71b7f4'
-              show_legend: false
-              show_line: false
-              show_points: false
-          state_map:
-            - value: 'off'
-            - value: 'on'
+                  # garage humidity
+                  - type: custom:button-card
+                    entity: sensor.garage_climate_humidity_rounded
+                    name: Humidity
+                    icon: mdi:water-percent
+                    show_state: true
+                    show_icon: true
+                    styles:
+                      card:
+                        - margin: 10px 2px 6px 2px
+                        - padding: 6px 4px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 32px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 28px
+                        - height: 28px
+                        - background: transparent
+                      icon:
+                        - width: 24px
+                        - color: '#5f9bea'
+                      name:
+                        - justify-self: start
+                        - font-size: 13px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 16px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
 
-      ## SHED CLIMATE CARDS
-      - type: 'custom:stack-in-card'
-        title: 'Sheds'
-        <<: *entities-header-style
+                  # garage vehicle door
+                  - type: custom:button-card
+                    entity: cover.garage_vehicledoor
+                    name: Door
+                    icon: mdi:garage-variant
+                    show_state: true
+                    show_icon: true
+                    state_display: |
+                      [[[
+                        if (entity.state == 'open') return 'Open';
+                        else return 'Closed';
+                      ]]]
+                    styles:
+                      card:
+                        - margin: 10px 8px 6px 2px
+                        - padding: 6px 4px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 32px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 28px
+                        - height: 28px
+                        - background: transparent
+                      icon:
+                        - width: 24px
+                        - color: |
+                            [[[
+                              return entity.state == 'open' ? '#ff8a65' : '#66bb6a';
+                            ]]]
+                      name:
+                        - justify-self: start
+                        - font-size: 13px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 16px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
+
+              # GARAGE TEMPERATURE GRAPH CARD
+              - type: custom:mini-graph-card
+                show:
+                  extrema: false
+                  icon: false
+                  labels: hover
+                  labels_secondary: hover
+                  name: false
+                  state: false
+                height: 78
+                line_width: 1
+                hours_to_show: 24
+                points_per_hour: 4
+                lower_bound_secondary: 30
+                upper_bound_secondary: 75
+                group: true
+                color_thresholds:
+                  - value: 0
+                    color: '#42a5f5'
+                  - value: 15
+                    color: '#66bb6a'
+                  - value: 24
+                    color: '#ffa726'
+                  - value: 30
+                    color: '#ef5350'
+                entities:
+                  # garage temperature
+                  - entity: sensor.garage_mean_temperature_calculation
+                    name: Temperature
+                    show_fill: false
+                    show_legend: false
+                    state_adaptive_color: true
+                  # garage humidity
+                  - entity: sensor.garage_climate_humidity_rounded
+                    name: Humidity
+                    line_width: 1
+                    show_legend: false
+                    show_fill: false
+                    state_adaptive_color: true
+                    color: '#5f9bea'
+                    y_axis: secondary
+                card_mod:
+                  style: |
+                    ha-card {
+                      background: transparent;
+                      border: none;
+                      box-shadow: none;
+                      padding-top: 0px !important;
+                    }
+
+              # GARAGE FUNCTION GRAPH CARD
+              - type: custom:mini-graph-card
+                show:
+                  extrema: false
+                  fill: fade
+                  icon: false
+                  labels: hover
+                  labels_secondary: hover
+                  name: false
+                  state: false
+                height: 22
+                line_width: 1
+                hours_to_show: 24
+                points_per_hour: 60
+                group: true
+                entities:
+                  # garage car door opened/closed
+                  - entity: binary_sensor.garage_vehicle_door_contact_state
+                    name: Vehicle Door
+                    color: '#ffffff'
+                    show_legend: true
+                    show_line: false
+                    show_points: false
+                  # garage heater on/off
+                  - entity: binary_sensor.hvac_garage_heating_state
+                    name: Heating
+                    color: '#ffad33'
+                    show_legend: false
+                    show_line: false
+                    show_points: false
+                  # garage dehumidifier on/off
+                  - entity: binary_sensor.garage_dehumidifier_state
+                    name: Dehumidifier
+                    color: '#71b7f4'
+                    show_legend: false
+                    show_line: false
+                    show_points: false
+                state_map:
+                  - value: 'off'
+                  - value: 'on'
+                card_mod:
+                  style: |
+                    ha-card {
+                      background: transparent;
+                      border: none;
+                      box-shadow: none;
+                      margin-top: -8px;
+                    }
+
+      # SHED CLIMATE CARDS
+      - type: grid
         cards:
-        - type: horizontal-stack
-          cards:
-          # shed temperature
-          - type: 'custom:button-card'
-            entity: sensor.snr_shed_temperature
-            name: Temperature
-            show_state: true
-            show_icon: false
-            <<: *graph-button-card-style
-          # shed humidity
-          - type: 'custom:button-card'
-            entity: sensor.snr_shed_humidity
-            name: Humidity
-            show_state: true
-            show_icon: false
-            <<: *graph-button-card-style
-          # propane tank
-          - type: 'custom:button-card'
-            entity: sensor.snr_shed_bbq_propane_tank_level_percent
-            name: 'BBQ Tank'
-            show_state: true
-            show_icon: false
-            <<: *graph-button-card-style
-          # shed door
-          - type: 'custom:button-card'
-            entity: binary_sensor.snr_shed_doorcontact_contact
-            name: Door
-            show_state: true
-            state_display: |
-              [[[
-                if (entity.state == 'on') return 'Open';
-                else return 'Closed'
-              ]]]
-            show_icon: false
-            <<: *graph-button-card-style
+          - type: heading
+            heading: Shed
+            heading_style: title
+            icon: mdi:greenhouse
 
-        # SHED TEMPERATURE GRAPH CARD
-        # tool shed
-        - type: 'custom:mini-graph-card'
-          show:
-            extrema: false
-            icon: false
-            labels: hover
-            labels_secondary: hover
-            name: false
-            state: false
-          height: 60
-          line_width: 1
-          hours_to_show: 24
-          points_per_hour: 4
-          lower_bound_secondary: 25
-          upper_bound_secondary: 90
-          group: true
-          <<: *mini-graph-style
-          <<: *temp-graph-color_thresholds
-          entities:
-            # temerature
-            - entity: sensor.snr_shed_temperature
-              name: Temperature
-              show_fill: false
-              show_legend: false
-              state_adaptive_color: true
-            # humidity
-            - entity: sensor.snr_shed_humidity
-              name: Humidity
-              line_width: 1
-              show_legend: false
-              show_fill: false
-              state_adaptive_color: true
-              color: '#5f9bea'
-              y_axis: secondary
-        # toy shed
-        - type: horizontal-stack
-          cards:
-          # toy shed temperature
-          - type: 'custom:button-card'
-            entity: sensor.snr_toy_shed_temperature
-            name: Temperature
-            show_state: true
-            show_icon: false
-            <<: *graph-button-card-style
-          # toy shed humidity
-          - type: 'custom:button-card'
-            entity: sensor.snr_toy_shed_humidity
-            name: Humidity
-            show_state: true
-            show_icon: false
-            <<: *graph-button-card-style
-          # blank
-          - type: 'custom:button-card'
-            <<: *entities-style
-            color_type: blank
-          # toy shed door (placeholder)
-          - type: 'custom:button-card'
-            <<: *graph-button-card-style
-            color_type: blank
+          # SHED SUMMARY AND HISTORY CARD
+          - type: custom:stack-in-card
+            mode: vertical
+            keep:
+              background: true
+              border_radius: true
+              box_shadow: true
+              margin: false
+            card_mod:
+              style: |
+                ha-card {
+                  border-radius: 24px;
+                  background: rgba(255,255,255,0.025);
+                  border: 1px solid rgba(255,255,255,0.075);
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+                  overflow: hidden;
+                }
+            cards:
+              # SHED SUMMARY CARDS
+              - type: grid
+                columns: 4
+                square: false
+                cards:
+                  # shed temperature
+                  - type: custom:button-card
+                    entity: sensor.snr_shed_temperature
+                    name: Temp
+                    icon: mdi:thermometer
+                    show_state: true
+                    show_icon: true
+                    styles:
+                      card:
+                        - margin: 10px 1px 6px 8px
+                        - padding: 6px 2px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 28px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 26px
+                        - height: 26px
+                        - background: transparent
+                      icon:
+                        - width: 22px
+                        - color: '#ffca28'
+                      name:
+                        - justify-self: start
+                        - font-size: 12px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 15px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
 
-        # TOY SHED TEMPERATURE GRAPH CARD
-        - type: 'custom:mini-graph-card'
-          show:
-            extrema: false
-            icon: false
-            labels: hover
-            labels_secondary: hover
-            name: false
-            state: false
-          height: 60
-          line_width: 1
-          hours_to_show: 24
-          points_per_hour: 4
-          lower_bound_secondary: 25
-          upper_bound_secondary: 95
-          group: true
-          <<: *mini-graph-style
-          <<: *temp-graph-color_thresholds
-          entities:
-            # temerature
-            - entity: sensor.snr_toy_shed_temperature
-              name: Temperature
-              show_fill: false
-              show_legend: false
-              state_adaptive_color: true
-            # humidity
-            - entity: sensor.snr_toy_shed_humidity
-              name: Humidity
-              line_width: 1
-              show_legend: false
-              show_fill: false
-              state_adaptive_color: true
-              color: '#5f9bea'
-              y_axis: secondary
+                  # shed humidity
+                  - type: custom:button-card
+                    entity: sensor.snr_shed_humidity
+                    name: Humidity
+                    icon: mdi:water-percent
+                    show_state: true
+                    show_icon: true
+                    styles:
+                      card:
+                        - margin: 10px 1px 6px 1px
+                        - padding: 6px 2px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 28px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 26px
+                        - height: 26px
+                        - background: transparent
+                      icon:
+                        - width: 22px
+                        - color: '#5f9bea'
+                      name:
+                        - justify-self: start
+                        - font-size: 12px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 15px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
+
+                  # propane tank
+                  - type: custom:button-card
+                    entity: sensor.snr_shed_bbq_propane_tank_level_percent
+                    name: BBQ
+                    icon: mdi:propane-tank
+                    show_state: true
+                    show_icon: true
+                    styles:
+                      card:
+                        - margin: 10px 1px 6px 1px
+                        - padding: 6px 2px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 28px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 26px
+                        - height: 26px
+                        - background: transparent
+                      icon:
+                        - width: 22px
+                        - color: '#ffca28'
+                      name:
+                        - justify-self: start
+                        - font-size: 12px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 15px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
+
+                  # shed door
+                  - type: custom:button-card
+                    entity: binary_sensor.snr_shed_doorcontact_contact
+                    name: Door
+                    icon: mdi:door
+                    show_state: true
+                    show_icon: true
+                    state_display: |
+                      [[[
+                        if (entity.state == 'on') return 'Open';
+                        else return 'Closed';
+                      ]]]
+                    styles:
+                      card:
+                        - margin: 10px 8px 6px 1px
+                        - padding: 6px 2px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 28px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 26px
+                        - height: 26px
+                        - background: transparent
+                      icon:
+                        - width: 22px
+                        - color: |
+                            [[[
+                              return entity.state == 'on' ? '#ff8a65' : '#66bb6a';
+                            ]]]
+                      name:
+                        - justify-self: start
+                        - font-size: 12px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 15px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
+
+              # SHED TEMPERATURE GRAPH CARD
+              - type: custom:mini-graph-card
+                show:
+                  extrema: false
+                  icon: false
+                  labels: hover
+                  labels_secondary: hover
+                  name: false
+                  state: false
+                height: 78
+                line_width: 1
+                hours_to_show: 24
+                points_per_hour: 4
+                lower_bound_secondary: 25
+                upper_bound_secondary: 90
+                group: true
+                color_thresholds:
+                  - value: 0
+                    color: '#42a5f5'
+                  - value: 15
+                    color: '#66bb6a'
+                  - value: 24
+                    color: '#ffa726'
+                  - value: 30
+                    color: '#ef5350'
+                entities:
+                  # shed temperature
+                  - entity: sensor.snr_shed_temperature
+                    name: Temperature
+                    show_fill: false
+                    show_legend: false
+                    state_adaptive_color: true
+                  # shed humidity
+                  - entity: sensor.snr_shed_humidity
+                    name: Humidity
+                    line_width: 1
+                    show_legend: false
+                    show_fill: false
+                    state_adaptive_color: true
+                    color: '#5f9bea'
+                    y_axis: secondary
+                card_mod:
+                  style: |
+                    ha-card {
+                      background: transparent;
+                      border: none;
+                      box-shadow: none;
+                      padding-top: 0px !important;
+                    }
+
+          # TOY SHED CLIMATE CARDS
+          - type: heading
+            heading: Toy Shed
+            heading_style: title
+            icon: mdi:toy-brick
+
+          - type: custom:stack-in-card
+            mode: vertical
+            keep:
+              background: true
+              border_radius: true
+              box_shadow: true
+              margin: false
+            card_mod:
+              style: |
+                ha-card {
+                  border-radius: 24px;
+                  background: rgba(255,255,255,0.025);
+                  border: 1px solid rgba(255,255,255,0.075);
+                  box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+                  overflow: hidden;
+                }
+            cards:
+              # TOY SHED SUMMARY CARDS
+              - type: grid
+                columns: 2
+                square: false
+                cards:
+                  # toy shed temperature
+                  - type: custom:button-card
+                    entity: sensor.snr_toy_shed_temperature
+                    name: Temperature
+                    icon: mdi:thermometer
+                    show_state: true
+                    show_icon: true
+                    styles:
+                      card:
+                        - margin: 10px 2px 6px 8px
+                        - padding: 6px 4px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 32px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 28px
+                        - height: 28px
+                        - background: transparent
+                      icon:
+                        - width: 24px
+                        - color: '#ffca28'
+                      name:
+                        - justify-self: start
+                        - font-size: 13px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 16px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
+
+                  # toy shed humidity
+                  - type: custom:button-card
+                    entity: sensor.snr_toy_shed_humidity
+                    name: Humidity
+                    icon: mdi:water-percent
+                    show_state: true
+                    show_icon: true
+                    styles:
+                      card:
+                        - margin: 10px 8px 6px 2px
+                        - padding: 6px 4px
+                        - background: transparent
+                        - border: none
+                        - box-shadow: none
+                      grid:
+                        - grid-template-areas: '"i n" "i s"'
+                        - grid-template-columns: 32px 1fr
+                        - align-items: center
+                      img_cell:
+                        - width: 28px
+                        - height: 28px
+                        - background: transparent
+                      icon:
+                        - width: 24px
+                        - color: '#5f9bea'
+                      name:
+                        - justify-self: start
+                        - font-size: 13px
+                        - font-weight: 700
+                        - line-height: 1.1
+                        - opacity: 0.84
+                      state:
+                        - justify-self: start
+                        - font-size: 16px
+                        - font-weight: 500
+                        - opacity: 0.9
+                        - line-height: 1.15
+
+              # TOY SHED TEMPERATURE GRAPH CARD
+              - type: custom:mini-graph-card
+                show:
+                  extrema: false
+                  icon: false
+                  labels: hover
+                  labels_secondary: hover
+                  name: false
+                  state: false
+                height: 78
+                line_width: 1
+                hours_to_show: 24
+                points_per_hour: 4
+                lower_bound_secondary: 25
+                upper_bound_secondary: 95
+                group: true
+                color_thresholds:
+                  - value: 0
+                    color: '#42a5f5'
+                  - value: 15
+                    color: '#66bb6a'
+                  - value: 24
+                    color: '#ffa726'
+                  - value: 30
+                    color: '#ef5350'
+                entities:
+                  # toy shed temperature
+                  - entity: sensor.snr_toy_shed_temperature
+                    name: Temperature
+                    show_fill: false
+                    show_legend: false
+                    state_adaptive_color: true
+                  # toy shed humidity
+                  - entity: sensor.snr_toy_shed_humidity
+                    name: Humidity
+                    line_width: 1
+                    show_legend: false
+                    show_fill: false
+                    state_adaptive_color: true
+                    color: '#5f9bea'
+                    y_axis: secondary
+                card_mod:
+                  style: |
+                    ha-card {
+                      background: transparent;
+                      border: none;
+                      box-shadow: none;
+                      padding-top: 0px !important;
+                    }
 
   ## ------ OUTSIDE CLIMATE DASHBOARD ------
   - title: Outside
@@ -2921,4 +3699,3 @@ views:
           include:
             - name: entity_id
               value: 'sensor.snr_*vibration_battery'
-

@@ -69,3 +69,40 @@
     {% endif %}
 
     {{ (christmas - today).days }}
+
+# house hvac display state
+- name: 'House HVAC Display State'
+  unique_id: house_hvac_display_state
+  icon: mdi:hvac
+  state: >
+    {% if is_state('binary_sensor.hvac_house_cooling_state', 'on') %}
+      Cooling
+    {% elif is_state('binary_sensor.hvac_house_heating_state', 'on') %}
+      Heating
+    {% elif is_state('binary_sensor.hvac_house_fan_state', 'on') %}
+      Fan
+    {% else %}
+      Idle
+    {% endif %}
+
+# living space temperature spread
+- name: 'Living Space Temperature Spread'
+  unique_id: living_space_temperature_spread
+  unit_of_measurement: "°C"
+  device_class: temperature
+  state_class: measurement
+  icon: mdi:thermometer-lines
+  state: >
+    {% set temps = [
+      states('sensor.uptairs_hallway_temperature') | float(none),
+      states('sensor.main_bedroom_mean_temperature_calculation') | float(none),
+      states('sensor.kids_bedroom_mean_temperature_calculation') | float(none),
+      states('sensor.snr_sparebedroom_climatedisplay_temperature') | float(none),
+      states('sensor.kitchen_mean_temperature_calculation') | float(none),
+      states('sensor.snr_familyroom_climatedisplay_temperature') | float(none),
+      ] | reject('eq', none) | list %}
+    {% if temps | count > 1 %}
+     {{ ((temps | max) - (temps | min)) | round(1) }}
+    {% else %}
+      unknown
+    {% endif %}
