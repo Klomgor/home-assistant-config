@@ -1,27 +1,44 @@
-# Board: Generic ESP8266 Board (Generic)
-# Definition: definitions/boards/generic-esp8266/manifest.yaml
+substitutions:
+  name: office-ir-blaster
+  friendly_name: Office IR Blaster
 
 esphome:
-  name: irb-office
-  friendly_name: irb-office
+  name: ${name}
+  friendly_name: ${friendly_name}
 
 esp8266:
-  board: esp01_1m
+  board: esp_wroom_02
+  board_flash_mode: dout
 
 logger:
+  baud_rate: 0
 
 api:
   encryption:
-    key: "WcTxGyCWg1Y2pS8vJ8cvuRUd1g5ouAZ4PsUpCpK3Br8="
-
-ota:
-  - platform: esphome
+    key: !secret irb_office_api_key
 
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
+  ssid: !secret wifi_ssid_iot
+  password: !secret wifi_password_iot
+
   ap:
-    ssid: irb-office Fallback Hotspot
-    password: "p42d5WtpZrKo"
+    ssid: "Office IR Fallback"
+    password: !secret office_ir_blaster_fallback_password
 
 captive_portal:
+
+remote_transmitter:
+  id: ir_transmitter
+  pin: GPIO14
+  carrier_duty_percent: 50%
+
+infrared:
+  - platform: ir_rf_proxy
+    name: IR Transmitter
+    id: infrared_transmitter
+    remote_transmitter_id: ir_transmitter
+
+button:
+  - platform: restart
+    name: Restart
+    entity_category: diagnostic
