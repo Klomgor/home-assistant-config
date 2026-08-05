@@ -42,3 +42,8 @@ button:
   - platform: restart
     name: Restart
     entity_category: diagnostic
+
+ota:
+  - platform: esphome
+    id: irb_office_ota
+    password: !secret irb_office_ota_passwd
