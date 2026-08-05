@@ -1,9 +1,9 @@
 substitutions:
-  name: office-ir-blaster
+  device_name: office-ir-blaster
   friendly_name: Office IR Blaster
 
 esphome:
-  name: ${name}
+  name: ${device_name}
   friendly_name: ${friendly_name}
 
 esp8266:
