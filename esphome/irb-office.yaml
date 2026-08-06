@@ -12,6 +12,7 @@ esp8266:
 
 logger:
   baud_rate: 0
+  level: INFO
 
 api:
   encryption:
