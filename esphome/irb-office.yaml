@@ -1,5 +1,5 @@
 substitutions:
-  device_name: office-ir-blaster
+  device_name: irb-office
   friendly_name: Office IR Blaster
 
 esphome:
