@@ -36,7 +36,9 @@ captive_portal:
 
 remote_transmitter:
   id: ir_transmitter
-  pin: GPIO14
+  pin:
+    number: GPIO14
+    inverted: true
   carrier_duty_percent: 50%
 
 infrared:
