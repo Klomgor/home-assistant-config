@@ -36,7 +36,10 @@ captive_portal:
 
 remote_transmitter:
   id: ir_transmitter
-  pin: GPIO14
+  pin:
+    number: GPIO14
+    mode:
+      output: true
   carrier_duty_percent: 50%
 
 infrared:
@@ -44,7 +47,7 @@ infrared:
     name: IR Transmitter
     id: infrared_transmitter
     remote_transmitter_id: ir_transmitter
-
+    
 button:
   # Simple hardware/emission test.
   # Point a phone camera at the Q1 and press this.
