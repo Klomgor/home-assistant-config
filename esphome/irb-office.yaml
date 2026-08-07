@@ -33,89 +33,14 @@ wifi:
     password: !secret esphome_fallback_ap_password
 
 captive_portal:
-
-remote_transmitter:
-  id: ir_transmitter
-  pin:
-    number: GPIO14
-    mode:
-      output: true
-  carrier_duty_percent: 50%
-
-infrared:
-  - platform: ir_rf_proxy
-    name: IR Transmitter
-    id: infrared_transmitter
-    remote_transmitter_id: ir_transmitter
-    
-button:
-  # Simple hardware/emission test.
-  # Point a phone camera at the Q1 and press this.
-  - platform: template
-    name: "IR Emission Test"
-    on_press:
-      - remote_transmitter.transmit_raw:
-          carrier_frequency: 38kHz
-          code:
-            - 100000
-            - -20000
-            - 100000
-            - -20000
-            - 100000
-
-  # Known BP01 raw OFF command.
-  - platform: template
-    name: "Dyson Raw Off Test"
-    on_press:
-      - remote_transmitter.transmit_raw:
-          carrier_frequency: 38kHz
-          code:
-            - 2230
-            - -730
-            - 750
-            - -755
-            - 740
-            - -735
-            - 775
-            - -705
-            - 740
-            - -1465
-            - 745
-            - -710
-            - 770
-            - -710
-            - 740
-            - -735
-            - 740
-            - -1465
-            - 775
-            - -1440
-            - 745
-            - -710
-            - 740
-            - -735
-            - 775
-            - -710
-            - 740
-            - -735
-            - 775
-            - -1440
-            - 745
-            - -710
-            - 740
-            - -735
-            - 805
-            - -675
-            - 715
-            - -790
-            - 740
-            - -1455
-            - 745
-            - -710
-            - 775
-            - -1500
-            - 745
-            - -710
+ 
+switch:
+  - platform: gpio
+    name: "GPIO14 IR Driver Test"
+    pin:
+      number: GPIO14
+      inverted: false
+    restore_mode: ALWAYS_OFF
 
   - platform: restart
     name: Restart
