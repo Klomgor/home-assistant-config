@@ -45,7 +45,23 @@ infrared:
     id: infrared_transmitter
     remote_transmitter_id: ir_transmitter
 
+globals:
+  - id: dyson_index
+    type: uint8_t
+    restore_value: no
+    initial_value: '0'
+
 button:
+  - platform: template
+    name: "Dyson Test Power"
+    on_press:
+      - remote_transmitter.transmit_dyson:
+          code: 0x1200
+          index: !lambda |-
+            uint8_t idx = id(dyson_index);
+            id(dyson_index) = (id(dyson_index) + 1) & 3;
+            return idx;
+
   - platform: restart
     name: Restart
     entity_category: diagnostic
