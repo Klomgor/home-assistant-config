@@ -33,14 +33,34 @@ wifi:
     password: !secret esphome_fallback_ap_password
 
 captive_portal:
- 
-switch:
-  - platform: gpio
-    name: "GPIO14 IR Driver Test"
-    pin:
-      number: GPIO14
-      inverted: false
-    restore_mode: ALWAYS_OFF
+
+remote_transmitter:
+  id: ir_transmitter
+  pin: GPIO14
+  carrier_duty_percent: 50%
+
+infrared:
+  - platform: ir_rf_proxy
+    name: IR Transmitter
+    id: infrared_transmitter
+    remote_transmitter_id: ir_transmitter
+
+button:
+  # Diagnostic only.
+  # Produces a long 38 kHz IR burst so the emitters
+  # are easier to see through a phone camera.
+  - platform: template
+    name: IR Emission Test
+    entity_category: diagnostic
+    on_press:
+      - remote_transmitter.transmit_raw:
+          carrier_frequency: 38kHz
+          code:
+            - 100000
+            - -20000
+            - 100000
+            - -20000
+            - 100000
 
   - platform: restart
     name: Restart
