@@ -46,21 +46,57 @@ infrared:
     remote_transmitter_id: ir_transmitter
 
 button:
-  # Diagnostic only.
-  # Produces a long 38 kHz IR burst so the emitters
-  # are easier to see through a phone camera.
   - platform: template
-    name: IR Emission Test
-    entity_category: diagnostic
+    name: "Dyson Test Off"
     on_press:
       - remote_transmitter.transmit_raw:
           carrier_frequency: 38kHz
           code:
-            - 100000
-            - -20000
-            - 100000
-            - -20000
-            - 100000
+            [2230, -730, 750, -755, 740, -735, 775, -705,
+             750, -1465, 745, -735, 740, -710, 770, -735,
+             750, -730, 750, -1440, 770, -740, 750, -730,
+             775, -705, 750, -730, 770, -710, 750, -730,
+             805, -675, 715, -790, 740, -1455, 775, -705,
+             715, -1500, 775, -705, 755]
+
+  - platform: template
+    name: "Dyson Test Rotate"
+    on_press:
+      - remote_transmitter.transmit_raw:
+          carrier_frequency: 38kHz
+          code:
+            [2245, -715, 800, -700, 755, -725, 780, -700,
+             780, -1440, 780, -705, 775, -700, 780, -700,
+             780, -700, 780, -1440, 775, -700, 760, -720,
+             765, -1455, 750, -1465, 780, -700, 775, -700,
+             775, -1440, 780, -1440, 775, -700, 780, -1440,
+             740, -1450, 750, -1495, 745]
+
+  - platform: template
+    name: "Dyson Test Speed Down"
+    on_press:
+      - remote_transmitter.transmit_raw:
+          carrier_frequency: 38kHz
+          code:
+            [2255, -730, 740, -735, 740, -710, 770, -735,
+             745, -1450, 750, -730, 765, -710, 715, -765,
+             715, -790, 735, -1455, 750, -730, 715, -1505,
+             775, -700, 775, -1440, 775, -1440, 780, -700,
+             780, -700, 765, -1455, 800, -680, 715, -765,
+             750, -730, 745, -730, 780]
+
+  - platform: template
+    name: "Dyson Test Speed Up"
+    on_press:
+      - remote_transmitter.transmit_raw:
+          carrier_frequency: 38kHz
+          code:
+            [2260, -700, 780, -725, 750, -700, 775, -705,
+             775, -1440, 775, -700, 775, -705, 775, -700,
+             770, -705, 775, -1445, 770, -705, 775, -1420,
+             770, -735, 750, -1440, 765, -740, 745, -1445,
+             775, -1470, 750, -1470, 750, -730, 750, -1445,
+             765, -740, 745, -1475, 710]
 
   - platform: restart
     name: Restart
