@@ -6,8 +6,6 @@ frontend:
   extra_module_url: !include assets/core/extra_modules.yaml
 homeassistant:
   customize: !include_dir_merge_named assets/customize
-# http
-http: !include assets/core/http.yaml
 # lovelace
 lovelace: !include assets/core/lovelace.yaml
 

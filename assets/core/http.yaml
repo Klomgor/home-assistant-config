@@ -1,3 +1,0 @@
-# ha core http config
-ssl_certificate: /ssl/fullchain.pem
-ssl_key: /ssl/privkey.pem
