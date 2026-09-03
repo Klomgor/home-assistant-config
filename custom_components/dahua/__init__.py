@@ -38,11 +38,14 @@ from .const import (
     STARTUP_MESSAGE,
     CONF_CHANNEL,
     CONF_AUTO_DETECT_CHANNEL,
+    CONF_USE_HTTPS,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
+    MIN_SCAN_INTERVAL,
 )
 from .dahua_utils import parse_event
 from .vto import DahuaVTOClient
 
-SCAN_INTERVAL_SECONDS = timedelta(seconds=30)
 
 # A stream that keeps heartbeating but has stopped reporting events looks
 # healthy to a read timeout, so recycle it periodically as well.
@@ -55,6 +58,39 @@ SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
+def get_configured_events(entry: ConfigEntry) -> list:
+    """Returns the events this entry subscribes to.
+
+    Options win when present, so the subscription can be changed after setup.
+    Entries created before the option existed only carry the setup-time value.
+    """
+    return entry.options.get(CONF_EVENTS, entry.data.get(CONF_EVENTS))
+
+
+def get_configured_use_https(entry: ConfigEntry):
+    """Whether this entry forces HTTPS.
+
+    None means "decide from the port", which is what the client did before the
+    option existed: HTTPS only on 443. An unticked box must keep that, so it
+    reads as None rather than False.
+    """
+    return True if entry.data.get(CONF_USE_HTTPS) else None
+
+
+def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
+    """Returns how often this entry polls its device.
+
+    Options win when present. Values below MIN_SCAN_INTERVAL are raised to it,
+    so a hand-edited entry cannot hammer the device.
+    """
+    seconds = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError):
+        seconds = DEFAULT_SCAN_INTERVAL
+    return timedelta(seconds=max(seconds, MIN_SCAN_INTERVAL))
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Set up this integration using UI."""
     if hass.data.get(DOMAIN) is None:
@@ -66,13 +102,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     address = entry.data.get(CONF_ADDRESS)
     port = int(entry.data.get(CONF_PORT))
     rtsp_port = int(entry.data.get(CONF_RTSP_PORT))
-    events = entry.data.get(CONF_EVENTS)
+    events = get_configured_events(entry)
     name = entry.data.get(CONF_NAME)
     channel = entry.data.get(CONF_CHANNEL, 0)
+    use_https = get_configured_use_https(entry)
 
     coordinator = DahuaDataUpdateCoordinator(hass, entry=entry, events=events, address=address, port=port,
                                              rtsp_port=rtsp_port, username=username, password=password, name=name,
-                                             channel=channel)
+                                             channel=channel, use_https=use_https)
     await coordinator.async_config_entry_first_refresh()
 
     if not coordinator.last_update_success:
@@ -100,14 +137,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the API."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, events: list, address: str, port: int, rtsp_port: int,
-                 username: str, password: str, name: str, channel: int) -> None:
+                 username: str, password: str, name: str, channel: int,
+                 use_https: bool = None) -> None:
         """Initialize the coordinator."""
         # Self signed certs are used over HTTPS so we'll disable SSL verification
         connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
         self._session = ClientSession(connector=connector)
 
         # The client used to communicate with Dahua devices
-        self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session)
+        self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session,
+                                               use_https)
 
         # self.config_entry = entry
         self.platforms = []
@@ -126,9 +165,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._profile_mode = "0"
         self._preset_position = "0"
         self._supports_profile_mode = False
-        # Newer cameras (e.g. dual-illuminator models) select the active day/night profile through
-        # the VideoInMode ConfigEx string instead of the Config[0] index. Detected during polling.
-        self._supports_config_ex = False
         self._channel = channel
         self._address = address
         self._max_streams = 3  # 1 main stream + 2 sub-streams by default
@@ -171,7 +207,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER,
             config_entry=entry,
             name=DOMAIN,
-            update_interval=SCAN_INTERVAL_SECONDS,
+            update_interval=get_configured_scan_interval(entry),
         )
 
     async def async_start_event_listener(self):
@@ -385,21 +421,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     except ClientError:
                         _LOGGER.debug("Cam does not support profile mode. Will use mode 0")
                         self._supports_profile_mode = False
-                    if not self._supports_profile_mode:
-                        # The legacy Lighting[0][2] probe is empty on some cams (e.g. white-light/dual
-                        # illuminator models). Fall back to the VideoInMode API, which is the canonical
-                        # source for the active day/night profile. Dual-illuminator models report an
-                        # empty Config list and expose the profile through ConfigEx instead, so accept
-                        # either key - otherwise supports_config_ex() stays False and the service
-                        # wrongly falls back to writing Config[0], which these cameras reject.
-                        try:
-                            mode_data = await self.client.async_get_video_in_mode()
-                            self._supports_profile_mode = (
-                                "table.VideoInMode[0].Config[0]" in mode_data
-                                or "table.VideoInMode[0].ConfigEx" in mode_data
-                            )
-                        except ClientError:
-                            self._supports_profile_mode = False
                     _LOGGER.debug("Device supports profile mode=%s", self._supports_profile_mode)
                 else:
                     # Start the event listeners for doorbells (VTO)
@@ -424,20 +445,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
-                    # Newer cameras (e.g. dual-illuminator models) keep VideoInMode.Config as a
-                    # static index list ([0,1]) and report the *active* day/night profile in the
-                    # ConfigEx string ("Day"/"Night"). Older cameras put the active profile directly
-                    # in Config[0]. Prefer ConfigEx when the camera reports it - on those cameras
-                    # Config[0] is always 0 and would make us think we're permanently in day mode.
-                    config_ex = mode_data.get("table.VideoInMode[0].ConfigEx")
-                    if config_ex is not None:
-                        self._supports_config_ex = True
-                        self._profile_mode = "1" if str(config_ex).lower() == "night" else "0"
-                    else:
-                        self._supports_config_ex = False
-                        self._profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
-                        if not self._profile_mode:
-                            self._profile_mode = "0"
+                    self._profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
+                    if not self._profile_mode:
+                        self._profile_mode = "0"
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
@@ -815,28 +825,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         bri = self.data.get("table.Lighting[{0}][0].MiddleLight[0].Light".format(self._channel))
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
-    def get_illuminator_index(self, profile_mode) -> int:
-        """
-        Return the Lighting_V2 array index of the white-light illuminator for the given profile.
-
-        On single-illuminator cameras the white light is at index 0, but on dual-illuminator
-        models (e.g. the -IL series) index 0 is the InfraredLight and the white light lives at a
-        later index. We locate it by LightType so the right light is read/controlled regardless of
-        layout. Falls back to 0 when no WhiteLight entry is present (legacy behaviour).
-        """
-        for index in range(0, 3):
-            light_type = self.data.get(
-                "table.Lighting_V2[{0}][{1}][{2}].LightType".format(self._channel, profile_mode, index))
-            if light_type == "WhiteLight":
-                return index
-        return 0
-
     def is_illuminator_on(self) -> bool:
         """Return true if the illuminator light is on"""
         # profile_mode 0=day, 1=night, 2=scene
-        profile_mode = self.get_profile_mode()
-        index = self.get_illuminator_index(profile_mode)
-        return self.data.get("table.Lighting_V2[{0}][{1}][{2}].Mode".format(self._channel, profile_mode, index), "") == "Manual"
+        profile_mode = self.get_profile_mode()       
+        return self.data.get("table.Lighting_V2[{0}][{1}][0].Mode".format(self._channel, profile_mode), "") == "Manual"
 
     def is_flood_light_on(self) -> bool:
 
@@ -855,10 +848,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
-        # profile_mode 0=day, 1=night, 2=scene
-        profile_mode = self.get_profile_mode()
-        index = self.get_illuminator_index(profile_mode)
-        bri = self.data.get("table.Lighting_V2[{0}][{1}][{2}].MiddleLight[0].Light".format(self._channel, profile_mode, index))
+
+        bri = self.data.get("table.Lighting_V2[{0}][0][0].MiddleLight[0].Light".format(self._channel))
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
     def is_security_light_on(self) -> bool:
@@ -868,11 +859,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_profile_mode(self) -> str:
         # profile_mode 0=day, 1=night, 2=scene
         return self._profile_mode
-
-    def supports_config_ex(self) -> bool:
-        """True if the camera selects the day/night profile via VideoInMode.ConfigEx (newer models)
-        rather than the Config[0] index. See _async_update_data for details."""
-        return self._supports_config_ex
 
     def get_channel(self) -> int:
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""

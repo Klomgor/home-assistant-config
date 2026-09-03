@@ -38,17 +38,25 @@ class DahuaClient:
             address: str,
             port: int,
             rtsp_port: int,
-            session: aiohttp.ClientSession
+            session: aiohttp.ClientSession,
+            use_https: bool = None
     ) -> None:
         self._username = username
         self._password = password
+        # One digest challenge shared by every request this client makes, so a
+        # call doesn't have to take a 401 before it can authenticate.
+        self._digest_state = {}
         # Strip trailing slashes from address to prevent malformed URLs like http://host/:80
         self._address = address.rstrip('/')
         self._session = session
         self._port = port
         self._rtsp_port = rtsp_port
 
-        protocol = "https" if int(port) == 443 else "http"
+        # Callers that do not say keep the old behaviour: HTTPS only on 443.
+        if use_https is None:
+            use_https = int(port) == 443
+        self._use_https = use_https
+        protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, self._address, port)
 
     def get_rtsp_stream_url(self, channel: int, subtype: int) -> str:
@@ -356,7 +364,7 @@ class DahuaClient:
         async with self._new_rpc2_session() as session:
             rpc2 = DahuaRpc2Client(
                 self._username, self._password, self._address, self._port,
-                self._rtsp_port, session
+                self._rtsp_port, session, self._use_https
             )
             try:
                 async with async_timeout.timeout(5):
@@ -381,7 +389,7 @@ class DahuaClient:
         async with self._new_rpc2_session() as session:
             rpc2 = DahuaRpc2Client(
                 self._username, self._password, self._address, self._port,
-                self._rtsp_port, session
+                self._rtsp_port, session, self._use_https
             )
             try:
                 async with async_timeout.timeout(5):
@@ -470,29 +478,6 @@ class DahuaClient:
             mode = "0"
 
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{0}].Config[0]={1}".format(channel, mode)
-        return await self.get(url, True)
-
-    async def async_set_video_profile_config_ex(self, channel: int, mode: str):
-        """
-        async_set_video_profile_config_ex selects the day/night profile on cameras that expose
-        VideoInMode.ConfigEx (e.g. newer dual-illuminator models). Mode should be one of: Day or Night.
-
-        These cameras keep VideoInMode.Config as a static index list and select the active profile
-        through the ConfigEx string ("Day"/"Night"). Writing Config[0] (the old path) is rejected by
-        this firmware, so we drive ConfigEx instead.
-
-        We also set VideoInMode.Mode=4, which pins the chosen profile so it is held instead of being
-        re-evaluated by an automatic day/night switch. Verified against the device via:
-            setConfig&VideoInMode[0].Mode=4&VideoInMode[0].ConfigEx=Day
-            setConfig&VideoInMode[0].Mode=4&VideoInMode[0].ConfigEx=Night
-        Both switch the profile correctly. (The camera's own web UI can mislabel this working mode,
-        but the API call itself works.)
-        """
-
-        config_ex = "Night" if mode.lower() == "night" else "Day"
-        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{ch}].Mode=4&VideoInMode[{ch}].ConfigEx={cfg}".format(
-            ch=channel, cfg=config_ex
-        )
         return await self.get(url, True)
 
     async def async_adjustfocus_v1(self, focus: str, zoom: str):
@@ -597,23 +582,21 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
-    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str, index: int = 0) -> dict:
+    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.
         brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
         NOTE: this is not the same as the infrared (IR) light. This is the white visible light on the camera
 
         profile_mode: 0=day, 1=night, 2=scene
-        index: the Lighting_V2 light index. White light is index 0 on single-illuminator cams but a
-               later index on dual-illuminator (-IL) models, so the caller passes the resolved index.
         """
 
         # on = Manual, off = Off
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][{index}].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][{index}].MiddleLight[0].Light={brightness}".format(
-            channel=channel, profile_mode=profile_mode, index=index, mode=mode, brightness=brightness
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][0].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][0].MiddleLight[0].Light={brightness}".format(
+            channel=channel, profile_mode=profile_mode, mode=mode, brightness=brightness
         )
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)
@@ -884,7 +867,7 @@ class DahuaClient:
                 # is detected but one that keeps heartbeating is left alone.
                 timeout = aiohttp.ClientTimeout(
                     total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS)
-                auth = DigestAuth(self._username, self._password, self._session)
+                auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
                 response = await auth.request("GET", url, timeout=timeout)
                 response.raise_for_status()
 
@@ -925,7 +908,7 @@ class DahuaClient:
         async with async_timeout.timeout(TIMEOUT_SECONDS):
             response = None
             try:
-                auth = DigestAuth(self._username, self._password, self._session)
+                auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
                 response = await auth.request("GET", self._base + url)
                 response.raise_for_status()
 
@@ -941,7 +924,7 @@ class DahuaClient:
             async with async_timeout.timeout(TIMEOUT_SECONDS):
                 response = None
                 try:
-                    auth = DigestAuth(self._username, self._password, self._session)
+                    auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
                     response = await auth.request("GET", url)
                     response.raise_for_status()
                     data = await response.text()
