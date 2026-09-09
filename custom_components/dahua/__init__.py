@@ -4,6 +4,7 @@ Custom integration to integrate Dahua cameras with Home Assistant.
 import asyncio
 from typing import Any, Dict
 import logging
+import random
 import ssl
 import time
 
@@ -14,15 +15,15 @@ import hashlib
 
 from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
 from . import dahua_utils
-from .client import DahuaClient
+from .client import DahuaClient, clear_host_cache
 from .model_profiles import is_sdt4e425
 
 from .const import (
@@ -34,12 +35,17 @@ from .const import (
     CONF_NAME,
     DOMAIN,
     PLATFORMS,
+    CAMERA,
+    LIGHT,
+    SELECT,
+    SWITCH,
     CONF_RTSP_PORT,
     STARTUP_MESSAGE,
     CONF_CHANNEL,
     CONF_AUTO_DETECT_CHANNEL,
     CONF_USE_HTTPS,
     CONF_SCAN_INTERVAL,
+    CONF_NVR_ACTIVE_DETERRENCE,
     DEFAULT_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
@@ -50,6 +56,93 @@ from .vto import DahuaVTOClient
 # A stream that keeps heartbeating but has stopped reporting events looks
 # healthy to a read timeout, so recycle it periodically as well.
 EVENT_STREAM_MAX_LIFETIME_SECONDS = 3600
+
+# An NVR gets one config entry per channel, and they all start within a moment
+# of each other, so a fixed lifetime makes every channel drop and re-attach in
+# the same second, once an hour. Spreading them means the device sees a trickle
+# of reconnections instead of a burst.
+EVENT_STREAM_JITTER = 0.1
+
+# The same applies after a failure: a device that rejected every channel at once
+# would otherwise be retried by every channel at once, sixty seconds later.
+EVENT_STREAM_RETRY_SECONDS = 60
+
+# A stream that lived this long was working, so reconnect at once. Anything
+# shorter gets backed off, because the fast path used to have no delay at all:
+# a device closing the socket at eleven seconds reconnected forever, silently.
+EVENT_STREAM_HEALTHY_SECONDS = 60
+EVENT_STREAM_SHORT_RETRY_SECONDS = 10
+
+# A stream that dies on contact will keep dying on contact: the device is
+# refusing us, not hiccuping. Asking again every sixty seconds forever is how a
+# device that ran out of connections stays out of connections, because each
+# attempt costs it another one. Back off instead, to this ceiling.
+EVENT_STREAM_MAX_RETRY_SECONDS = 600
+
+
+# A capability probe that times out has told us what an errored probe tells us:
+# this device will not serve that call, so do not offer the entity. Timeouts are
+# not aiohttp.ClientError -- asyncio.TimeoutError is the builtin -- so before
+# this they escaped the probe, hit the outer handler, and failed the whole
+# config entry with ConfigEntryNotReady. One slow capability check took the
+# device down and Home Assistant retried it forever. See #594 and #631.
+PROBE_FAILED = (ClientError, TimeoutError)
+
+# The coaxial probe deliberately only treats an HTTP error response as "not
+# supported"; a connection failure there should still fail setup. Timeouts join
+# it for the reason above, without widening the rest.
+PROBE_REFUSED = (ClientResponseError, TimeoutError)
+
+
+def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0) -> float:
+    """How long to wait before re-attaching, given how long the stream lasted."""
+    if lived_seconds < 10:
+        # Double per successive instant death, so a device that is refusing
+        # attach gets asked less often the longer it keeps refusing.
+        doublings = max(0, consecutive_failures - 1)
+        backoff = EVENT_STREAM_RETRY_SECONDS * (2 ** min(doublings, MAX_BACKOFF_DOUBLINGS))
+        return jittered(min(backoff, EVENT_STREAM_MAX_RETRY_SECONDS))
+    if lived_seconds < EVENT_STREAM_HEALTHY_SECONDS:
+        return jittered(EVENT_STREAM_SHORT_RETRY_SECONDS)
+    return 0.0
+
+
+# A single missed poll is a blip -- a snapshot timing out, a device busy writing
+# to disk -- and backing off on one would make the integration feel sluggish for
+# no reason. Past that, the device is not answering and polling it on the
+# configured cadence only adds to whatever is wrong.
+FAILURES_BEFORE_BACKOFF = 2
+
+# Guard on the exponent so the arithmetic stays sane for a device that has been
+# failing for a week. The time ceilings below are what actually bind.
+MAX_BACKOFF_DOUBLINGS = 6
+
+# However long the poll interval is, never leave a failing device unpolled for
+# longer than this, or a device that recovers stays missing for an afternoon.
+POLL_BACKOFF_CAP = timedelta(minutes=15)
+
+
+def failure_backoff(base: timedelta, consecutive: int) -> timedelta:
+    """The interval to poll at, given this many consecutive failures.
+
+    Returns the configured interval until the failures stop looking incidental,
+    then doubles per failure up to a ceiling.
+    """
+    if consecutive <= FAILURES_BEFORE_BACKOFF:
+        return base
+    doublings = min(consecutive - FAILURES_BEFORE_BACKOFF, MAX_BACKOFF_DOUBLINGS)
+    # Never shorter than the interval the user asked for: someone already
+    # polling every half hour is not the problem this is here to solve, and
+    # backing "off" to something faster would be worse than doing nothing.
+    return min(base * (2 ** doublings), max(POLL_BACKOFF_CAP, base))
+
+
+def jittered(seconds: float, fraction: float = EVENT_STREAM_JITTER) -> float:
+    """Spread a shared interval so simultaneous callers stop being simultaneous."""
+    if seconds <= 0 or fraction <= 0:
+        return seconds
+    spread = seconds * fraction
+    return max(1.0, seconds + random.uniform(-spread, spread))
 
 SSL_CONTEXT = ssl.create_default_context()
 SSL_CONTEXT.set_ciphers("DEFAULT")
@@ -110,27 +203,415 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     coordinator = DahuaDataUpdateCoordinator(hass, entry=entry, events=events, address=address, port=port,
                                              rtsp_port=rtsp_port, username=username, password=password, name=name,
                                              channel=channel, use_https=use_https)
-    await coordinator.async_config_entry_first_refresh()
-
-    if not coordinator.last_update_success:
-        _LOGGER.warning("dahua async_setup_entry for init, data not ready")
-        raise ConfigEntryNotReady
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception:
+        # The coordinator opens a session and takes a reference on the host's
+        # shared connection pool in its constructor, and only async_stop gives
+        # them back. Nothing reaches async_stop unless the coordinator makes it
+        # into hass.data, which a failed setup never does -- so without this,
+        # every retry against a device that is not answering leaks one session
+        # and one reference, forever, and Home Assistant retries forever.
+        await coordinator.async_stop()
+        raise
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
     # https://developers.home-assistant.io/docs/config_entries_index/
-    for platform in PLATFORMS:
-        if entry.options.get(platform, True):
-            coordinator.platforms.append(platform)
-            await hass.config_entries.async_forward_entry_setups(entry, [platform])
+    # Forward every platform in one call. Home Assistant gathers them into
+    # concurrent tasks, so one call sets all of them up at once; calling it once
+    # per platform instead serialised them, and an entry's setup budget then had
+    # to cover the sum of six platforms rather than the slowest one. A device
+    # answering slowly could exhaust it and take the whole entry down with a
+    # CancelledError -- see #513.
+    coordinator.platforms.extend(p for p in PLATFORMS if entry.options.get(p, True))
+    if coordinator.platforms:
+        await hass.config_entries.async_forward_entry_setups(entry, coordinator.platforms)
 
-    entry.add_update_listener(async_reload_entry)
+    # Wrapped, because unloading does not clear an entry's update listeners.
+    # A plain add_update_listener leaves one behind on every reload, and then a
+    # single options change fires as many reloads as the entry has ever had --
+    # against an NVR, exactly the burst that wedges it.
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     entry.async_on_unload(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, coordinator.async_stop)
     )
 
     return True
+
+
+# Every config entry for one NVR used to open its own connection pool, so the
+# channels of a single device never reused a connection between them. Share one
+# pool per address instead, reference counted so the last entry to unload closes
+# it. Sessions stay per entry; only the connector underneath is shared.
+_HOST_CONNECTORS: dict = {}
+
+
+# How many consecutive failed refreshes before we call a host unreachable. At
+# the default 30s interval that is about two and a half minutes, long enough to
+# ride out a single dropped poll.
+UNREACHABLE_AFTER_FAILURES = 5
+
+# A TCP probe is cheap but not free, and a wedged host fails every single poll.
+HTTPS_PROBE_MIN_INTERVAL = 600
+
+ISSUE_UNREACHABLE = "unreachable_{0}"
+ISSUE_HTTP_DEAD_HTTPS_AVAILABLE = "http_dead_https_available_{0}"
+
+# address -> {"consecutive": int, "since": float, "entry_ids": set, "last_probe": float}
+#
+# Module level rather than on the coordinator, for two reasons. A failed setup
+# never publishes its coordinator to hass.data, because
+# async_config_entry_first_refresh raises first, so every retry would build and
+# discard a fresh counter. And an NVR has one config entry per channel, so the
+# count must be shared or eight channels of one box raise eight separate cards.
+_HOST_FAILURES: dict = {}
+
+
+def normalize_address(address: str) -> str:
+    """One device, one key.
+
+    DahuaClient rstrips the address before keying its request limiter, but
+    _acquire_connector did not, so a trailing slash could leave a single device
+    holding two differently keyed pools. Everything host scoped goes through
+    this.
+    """
+    return (address or "").strip().rstrip("/")
+
+
+def _entries_for_address(hass: HomeAssistant, address: str) -> list:
+    """Every config entry pointing at this host."""
+    wanted = normalize_address(address)
+    return [
+        entry
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if normalize_address(entry.data.get(CONF_ADDRESS)) == wanted
+    ]
+
+
+async def _async_probe_tcp(address: str, port: int, timeout: float = 5.0) -> bool:
+    """Can we open a TCP connection? No HTTP, no credentials, no retry."""
+    writer = None
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(address, port), timeout
+        )
+        return True
+    except Exception:  # pylint: disable=broad-except
+        return False
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+
+async def _async_evaluate_host(hass: HomeAssistant, address: str) -> None:
+    """Decide which card, if any, this host has earned.
+
+    Some Dahua firmwares stop serving plain HTTP while HTTPS keeps working. If
+    that is what happened we can say so and offer to switch. Otherwise all we
+    can honestly report is that the device is not answering.
+    """
+    address = normalize_address(address)
+    unreachable_id = ISSUE_UNREACHABLE.format(address)
+    https_id = ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)
+
+    entries = _entries_for_address(hass, address)
+    if not entries:
+        return
+
+    # Nothing to offer if this host is already reached over HTTPS.
+    already_https = any(
+        str(entry.data.get(CONF_PORT)) == "443" or entry.data.get(CONF_USE_HTTPS)
+        for entry in entries
+    )
+
+    state = _HOST_FAILURES.get(address)
+    https_is_open = False
+    if not already_https and state is not None:
+        state["last_probe"] = time.time()
+        https_is_open = await _async_probe_tcp(address, 443)
+
+    minutes = 1
+    if state:
+        minutes = max(1, int((time.time() - state.get("since", time.time())) / 60))
+
+    placeholders = {
+        "address": address,
+        "entries": str(len(entries)),
+        "minutes": str(minutes),
+        "port": str(entries[0].data.get(CONF_PORT, "80")),
+    }
+
+    if https_is_open:
+        ir.async_delete_issue(hass, DOMAIN, unreachable_id)
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            https_id,
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="http_dead_https_available",
+            translation_placeholders=placeholders,
+            data={"address": address},
+        )
+    else:
+        ir.async_delete_issue(hass, DOMAIN, https_id)
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            unreachable_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="device_unreachable",
+            translation_placeholders=placeholders,
+            learn_more_url="https://github.com/rroller/dahua#debugging",
+        )
+
+
+@callback
+def async_record_host_failure(hass: HomeAssistant, address: str, entry_id: str) -> int:
+    """Note a failed refresh, raising a card once it stops looking like a blip.
+
+    Returns how many consecutive failures this host has now had, which is what
+    the caller backs off on. Keyed by host rather than by entry: eleven channels
+    of one NVR are eleven witnesses to a single outage, not eleven outages.
+    """
+    address = normalize_address(address)
+    state = _HOST_FAILURES.setdefault(
+        address,
+        {"consecutive": 0, "since": time.time(), "entry_ids": set(), "last_probe": 0},
+    )
+    state["consecutive"] += 1
+    state["entry_ids"].add(entry_id)
+
+    if state["consecutive"] < UNREACHABLE_AFTER_FAILURES:
+        return state["consecutive"]
+    # Re-evaluate on the threshold, then only as often as the probe interval
+    # allows, so a wedged host does not get probed on every poll.
+    if state["consecutive"] == UNREACHABLE_AFTER_FAILURES or (
+        time.time() - state.get("last_probe", 0) >= HTTPS_PROBE_MIN_INTERVAL
+    ):
+        hass.async_create_task(_async_evaluate_host(hass, address))
+    return state["consecutive"]
+
+
+@callback
+def async_record_host_success(hass: HomeAssistant, address: str) -> None:
+    """The device answered, so withdraw anything we said about it.
+
+    Keyed by host: if any channel of an NVR replies, the box is up.
+    """
+    address = normalize_address(address)
+    if _HOST_FAILURES.pop(address, None) is None:
+        return
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address))
+
+
+def _acquire_connector(address: str) -> TCPConnector:
+    """Returns the shared connector for this address, creating it if needed."""
+    address = normalize_address(address)
+    holder = _HOST_CONNECTORS.get(address)
+    if holder is None or holder[0].closed:
+        # enable_cleanup_closed is deliberately not set: aiohttp ignores it on
+        # every Python that Home Assistant now runs on, and warns once per
+        # connector in the user's log for the trouble.
+        holder = [TCPConnector(ssl=SSL_CONTEXT), 0]
+        _HOST_CONNECTORS[address] = holder
+    holder[1] += 1
+    return holder[0]
+
+
+async def _release_connector(address: str) -> None:
+    """Drops a reference, closing the connector once nothing is using it."""
+    address = normalize_address(address)
+    holder = _HOST_CONNECTORS.get(address)
+    if holder is None:
+        return
+    holder[1] -= 1
+    if holder[1] <= 0:
+        _HOST_CONNECTORS.pop(address, None)
+        clear_host_cache(address)
+        await holder[0].close()
+
+
+class DahuaHostEventStream:
+    """One event stream for a host, shared by every channel configured on it.
+
+    The device's event stream is not per channel: attaching to it returns every
+    channel's events regardless of who asked. An NVR with eleven channels was
+    therefore holding eleven identical streams and having ten of them throw each
+    event away. This holds one, and hands each event to the channels that want
+    it.
+    """
+
+    def __init__(self, hass: HomeAssistant, address: str) -> None:
+        self._hass = hass
+        self._address = address
+        # channel index -> coordinators listening on that channel
+        self._by_channel: Dict[int, list] = {}
+        self._owner = None  # whose client the stream currently borrows
+        self._events: frozenset = frozenset()
+        self._task: asyncio.Task | None = None
+        # Whether the last attach failed, so an outage is reported once.
+        self._failing = False
+        # How many times running the stream has died on contact, which is what
+        # the retry delay backs off on.
+        self._consecutive_failures = 0
+
+    @property
+    def coordinators(self) -> list:
+        return [c for group in self._by_channel.values() for c in group]
+
+    def _union(self) -> frozenset:
+        """Every event any channel on this host asked for.
+
+        Attaching with one channel's list would silently stop delivering the
+        codes another channel selected.
+        """
+        union = set()
+        for coordinator in self.coordinators:
+            union.update(coordinator.events or [])
+        return frozenset(union)
+
+    def register(self, coordinator) -> None:
+        self._by_channel.setdefault(coordinator.get_channel(), []).append(coordinator)
+        if self._owner is None:
+            self._owner = coordinator
+        self._restart_if_needed()
+
+    async def unregister(self, coordinator) -> bool:
+        """Drop a channel. Returns True when nothing is left on this host."""
+        group = self._by_channel.get(coordinator.get_channel(), [])
+        if coordinator in group:
+            group.remove(coordinator)
+        if not group:
+            self._by_channel.pop(coordinator.get_channel(), None)
+
+        remaining = self.coordinators
+        if not remaining:
+            await self.async_stop()
+            return True
+
+        # The stream borrows the owner's client, and unloading an entry closes
+        # its session, so hand the stream to someone still here.
+        if coordinator is self._owner:
+            self._owner = remaining[0]
+            self._events = frozenset()  # force a restart on the new client
+        self._restart_if_needed()
+        return False
+
+    def _restart_if_needed(self) -> None:
+        wanted = self._union()
+        if self._task is not None and not self._task.done() and wanted == self._events:
+            return
+        self._events = wanted
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+        if wanted and self._owner is not None:
+            self._task = asyncio.create_task(self._async_run())
+
+    async def async_stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+        self._by_channel.clear()
+        self._owner = None
+        self._events = frozenset()
+
+    async def _async_run(self) -> None:
+        """Hold the stream open, recycling it the way a single channel used to."""
+        while True:
+            start_time = time.monotonic()
+            try:
+                await asyncio.wait_for(
+                    self._owner.client.stream_events(
+                        self.on_receive, sorted(self._events), 0
+                    ),
+                    timeout=jittered(EVENT_STREAM_MAX_LIFETIME_SECONDS),
+                )
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                self._failing = False
+                self._consecutive_failures = 0
+                _LOGGER.debug("Recycling event stream for %s", self._address)
+            except Exception as ex:  # pylint: disable=broad-except
+                # Say it once per outage, not once per retry. Silence was the
+                # old behaviour and it is why these failures went unreported;
+                # a warning every sixty seconds forever is the other extreme.
+                self._consecutive_failures += 1
+                if not self._failing:
+                    self._failing = True
+                    _LOGGER.warning(
+                        "Event stream for %s ended unexpectedly: %s", self._address, ex
+                    )
+                else:
+                    _LOGGER.debug(
+                        "Event stream for %s still failing: %s", self._address, ex
+                    )
+            else:
+                self._failing = False
+                self._consecutive_failures = 0
+
+            retry_in = event_stream_retry_delay(
+                time.monotonic() - start_time, self._consecutive_failures
+            )
+            if retry_in:
+                _LOGGER.debug(
+                    "Reconnecting to event stream for %s in %.0fs",
+                    self._address,
+                    retry_in,
+                )
+                await asyncio.sleep(retry_in)
+            else:
+                _LOGGER.debug("Reconnecting to event stream for %s", self._address)
+
+    def on_receive(self, data_bytes: bytes, _channel: int) -> None:
+        """Parse once, then hand each event only to the channels that want it."""
+        events = parse_event(data_bytes.decode("utf-8", errors="ignore"))
+        if not events:
+            return
+
+        for event in events:
+            index = 0
+            if "index" in event:
+                try:
+                    index = int(event["index"])
+                except ValueError:
+                    index = 0
+
+            # A channel nobody has configured stays silent, exactly as it did
+            # when every coordinator discarded it.
+            for coordinator in self._by_channel.get(index, ()):
+                coordinator.handle_event(dict(event))
+
+
+# address -> DahuaHostEventStream
+_HOST_STREAMS: Dict[str, DahuaHostEventStream] = {}
+
+
+def _host_stream(hass: HomeAssistant, address: str) -> DahuaHostEventStream:
+    address = normalize_address(address)
+    stream = _HOST_STREAMS.get(address)
+    if stream is None:
+        stream = _HOST_STREAMS[address] = DahuaHostEventStream(hass, address)
+    return stream
+
+
+async def _release_host_stream(coordinator) -> None:
+    address = normalize_address(coordinator.get_address())
+    stream = _HOST_STREAMS.get(address)
+    if stream is None:
+        return
+    if await stream.unregister(coordinator):
+        _HOST_STREAMS.pop(address, None)
 
 
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
@@ -140,9 +621,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                  username: str, password: str, name: str, channel: int,
                  use_https: bool = None) -> None:
         """Initialize the coordinator."""
-        # Self signed certs are used over HTTPS so we'll disable SSL verification
-        connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
-        self._session = ClientSession(connector=connector)
+        # Self signed certs are used over HTTPS so we'll disable SSL verification.
+        # connector_owner=False keeps the shared pool alive when this session closes.
+        self._session = ClientSession(
+            connector=_acquire_connector(address), connector_owner=False
+        )
 
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session,
@@ -155,6 +638,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
+        self._nvr_active_deterrence = entry.options.get(CONF_NVR_ACTIVE_DETERRENCE, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
         self._supports_smart_motion_detection = False
@@ -213,34 +697,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def async_start_event_listener(self):
         """ Starts the event listeners for IP cameras (this does not work for doorbells (VTO)) """
         if self.events is not None:
-            self._event_task = asyncio.create_task(self._async_stream_events())
+            # Join this host's stream rather than opening another one. The
+            # device sends every channel's events down any stream, so one is
+            # enough no matter how many channels are configured.
+            _host_stream(self.hass, self._address).register(self)
 
     async def async_start_vto_event_listener(self):
         """ Starts the event listeners for doorbells (VTO). This will not work for IP cameras"""
         self._vto_task = asyncio.create_task(self._async_stream_vto_events())
-
-    async def _async_stream_events(self):
-        """Continuously stream events from the camera, reconnecting on failure."""
-        while True:
-            start_time = time.monotonic()
-            try:
-                await asyncio.wait_for(
-                    self.client.stream_events(self.on_receive, self.events, self._channel),
-                    timeout=EVENT_STREAM_MAX_LIFETIME_SECONDS,
-                )
-            except asyncio.CancelledError:
-                raise
-            except asyncio.TimeoutError:
-                _LOGGER.debug("Recycling event stream for %s", self._address)
-            except Exception as ex:
-                _LOGGER.warning("Event stream for %s ended unexpectedly: %s", self._address, ex)
-
-            elapsed = time.monotonic() - start_time
-            if elapsed < 10:
-                _LOGGER.debug("Event stream for %s failed quickly, retrying in 60s", self._address)
-                await asyncio.sleep(60)
-            else:
-                _LOGGER.debug("Reconnecting to event stream for %s", self._address)
 
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
@@ -267,6 +731,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def async_stop(self, event: Any = None):
         """ Stop anything we need to stop """
+        await _release_host_stream(self)
         if self._event_task is not None:
             self._event_task.cancel()
             self._event_task = None
@@ -277,12 +742,60 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _close_session(self) -> None:
         _LOGGER.debug("Closing Session")
+        try:
+            await self.client.close()
+        except Exception:
+            _LOGGER.debug("Failed to close the client's RPC2 session", exc_info=True)
         if self._session is not None:
             try:
                 await self._session.close()
                 self._session = None
             except Exception as e:
                 _LOGGER.exception("serverConnect - failed to close session")
+            finally:
+                await _release_connector(self._address)
+
+    def _restore_poll_interval(self) -> None:
+        """Put the configured interval back after a device starts answering."""
+        # Read it back from the entry rather than remembering it: the user may
+        # have changed the option while we were backed off, and their new value
+        # should win over whatever we were doubling from.
+        configured = get_configured_scan_interval(self.config_entry)
+        if self.update_interval != configured:
+            _LOGGER.debug(
+                "%s is answering again, polling every %ss", self._address, configured.total_seconds()
+            )
+            self.update_interval = configured
+
+    def _back_off_poll_interval(self, consecutive: int) -> None:
+        """Poll a device that is not answering less often, not just as often.
+
+        Every request costs the device a connection and a login it has to
+        refuse. Keeping the configured cadence against a device that is already
+        refusing is what turns a device that ran out of connections into one
+        that stays out of them until it is power cycled.
+        """
+        interval = failure_backoff(get_configured_scan_interval(self.config_entry), consecutive)
+        if self.update_interval != interval:
+            _LOGGER.debug(
+                "%s has failed %s times, backing off to %ss",
+                self._address, consecutive, interval.total_seconds(),
+            )
+            self.update_interval = interval
+
+    def _wanted_by(self, *platforms: str) -> bool:
+        """Whether anything that reads this answer is actually loaded.
+
+        The poll used to fetch purely on what the device reported supporting,
+        so an entry with `select` switched off still paid for a PTZ position
+        read on every cycle to feed an entity that was never created. Each of
+        those costs the device a connection and a login it has to refuse.
+
+        Read from the entry options rather than `coordinator.platforms`: the
+        first refresh runs before the platforms are forwarded, so that list is
+        still empty then and everything would be skipped on the first poll.
+        """
+        return any(self.config_entry.options.get(platform, True) for platform in platforms)
 
     async def _async_update_data(self):
         """Reload the camera information"""
@@ -329,33 +842,34 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 auto_detect = self.config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True)
                 if auto_detect:
                     try:
-                        await self.client.async_get_snapshot(0)
+                        await self.client.async_probe_snapshot(0)
                         # If able to take a snapshot with index 0 then most likely this cams channel needs to be reset
                         # but check if unit is not a doorbell first as channel 0 doesnt exist for VTOs
                         if not self.is_doorbell():
                             self._channel_number = self._channel
-                    except ClientError:
+                    except PROBE_FAILED:
                         pass
                 _LOGGER.debug("Using channel number %s (auto_detect=%s)", self._channel_number, auto_detect)
 
                 try:
-                    await self.client.async_get_coaxial_control_io_status()
+                    coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
+                    await self.client.async_get_coaxial_control_io_status(coaxial_channel)
                     self._supports_coaxial_control = True
-                except ClientResponseError:
+                except PROBE_REFUSED:
                     self._supports_coaxial_control = False
                 _LOGGER.debug("Device supports Coaxial Control=%s", self._supports_coaxial_control)
 
                 try:
                     await self.client.async_get_disarming_linkage()
                     self._supports_disarming_linkage = True
-                except ClientError:
+                except PROBE_FAILED:
                     self._supports_disarming_linkage = False
                 _LOGGER.debug("Device supports disarming linkage=%s", self._supports_disarming_linkage)
 
                 try:
                     await self.client.async_get_event_notifications()
                     self._supports_event_notifications = True
-                except ClientError:
+                except PROBE_FAILED:
                     self._supports_event_notifications = False
                 _LOGGER.debug("Device supports event notifications=%s", self._supports_event_notifications)
 
@@ -368,7 +882,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     try:
                         await self.client.async_get_ptz_position()
                         self._supports_ptz_position = True
-                    except ClientError:
+                    except PROBE_FAILED:
                         self._supports_ptz_position = False
                 _LOGGER.debug("Device supports PTZ position=%s", self._supports_ptz_position)
 
@@ -377,7 +891,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     await self.client.async_get_smart_motion_detection()
                     self._supports_smart_motion_detection = True
-                except ClientError:
+                except PROBE_FAILED:
                     self._supports_smart_motion_detection = False
                 _LOGGER.debug("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
 
@@ -389,19 +903,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 self._supports_floodlightmode = self.supports_floodlightmode()
 
-                try:
-                    await self.client.async_get_config_lighting(self._channel, self._profile_mode)
-                    self._supports_lighting = True
-                except ClientError:
-                    self._supports_lighting = False
-                    pass
+                self._supports_lighting = await self.async_detect_lighting_support()
                 _LOGGER.debug("Device supports infrared lighting=%s", self.supports_infrared_light())
 
 #Checking lighting_v2 support
                 try:
                     await self.client.async_get_lighting_v2()
                     self._supports_lighting_v2 = True
-                except ClientError:
+                except PROBE_FAILED:
                     self._supports_lighting_v2 = False
                     pass
                 _LOGGER.debug("Device supports Lighting_V2=%s", self._supports_lighting_v2)
@@ -418,7 +927,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # Error: Error -1 getting param in name=Lighting[0][1]
                         # Otherwise we'll get multiple lines of config back
                         self._supports_profile_mode = len(conf) > 1
-                    except ClientError:
+                    except PROBE_FAILED:
                         _LOGGER.debug("Cam does not support profile mode. Will use mode 0")
                         self._supports_profile_mode = False
                     _LOGGER.debug("Device supports profile mode=%s", self._supports_profile_mode)
@@ -433,9 +942,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self.config_entry.async_start_reauth(self.hass)
                     raise UpdateFailed("Authentication failed") from exception
                 _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
+                self._back_off_poll_interval(
+                    async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
+                )
                 raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
             except Exception as exception:
                 _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
+                self._back_off_poll_interval(
+                    async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
+                )
                 raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
 
         # This is the event loop code that's called every n seconds
@@ -445,47 +960,55 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
-                    self._profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
-                    if not self._profile_mode:
-                        self._profile_mode = "0"
+                    self._profile_mode = self.read_profile_mode(mode_data)
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
                     pass
             
-            # We need the ptz status
-            if self._supports_ptz_position:
+            # The profile mode above has to be read first because the lighting
+            # call below needs it. The PTZ position does not, so it joins the
+            # fan-out rather than costing an extra round trip ahead of it.
+            async def _ptz_position():
                 try:
-                    ptz_data = await self.client.async_get_ptz_position()
-                    data.update(ptz_data)
-                    self._preset_position = ptz_data.get("status.PresetID", "0")
-                    if not self._preset_position:
-                        self._preset_position = "0"
+                    return await self.client.async_get_ptz_position()
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get preset position", exc_info=exception)
-                    pass
+                    return None
 
             # Figure out which APIs we need to call and then fan out and gather the results
-            coros = [
-                asyncio.ensure_future(self.client.async_get_config_motion_detection()),
-            ]
-            if self.supports_infrared_light():
+            # Motion detection state is read by the camera entity as well as
+            # the switch, so it survives either one being enabled.
+            coros = []
+            if self._wanted_by(CAMERA, SWITCH):
+                coros.append(asyncio.ensure_future(self.client.async_get_config_motion_detection()))
+            # Only the preset position select reads this, and it is one of the
+            # two per-poll calls the config cache does not cover.
+            if self._supports_ptz_position and self._wanted_by(SELECT):
+                coros.append(asyncio.ensure_future(_ptz_position()))
+            if self.supports_infrared_light() and self._wanted_by(LIGHT):
                 coros.append(
                     asyncio.ensure_future(self.client.async_get_config_lighting(self._channel, self._profile_mode)))
-            if self._supports_disarming_linkage:
+            if self._supports_disarming_linkage and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
-            if self._supports_event_notifications:
+            if self._supports_event_notifications and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_event_notifications()))
-            if self._supports_coaxial_control:
-                coros.append(asyncio.ensure_future(self.client.async_get_coaxial_control_io_status()))
-            if self._supports_smart_motion_detection:
+            # The siren switch and the security light both read this one.
+            if self._supports_coaxial_control and self._wanted_by(LIGHT, SWITCH):
+                coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
+                coros.append(
+                    asyncio.ensure_future(
+                        self.client.async_get_coaxial_control_io_status(coaxial_channel)
+                    )
+                )
+            if self._supports_smart_motion_detection and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_smart_motion_detection()))
-            if self.supports_smart_motion_detection_amcrest():
+            if self.supports_smart_motion_detection_amcrest() and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_video_analyse_rules_for_amcrest()))
-            if self.is_amcrest_doorbell():
+            if self.is_amcrest_doorbell() and self._wanted_by(LIGHT):
                 coros.append(asyncio.ensure_future(self.client.async_get_light_global_enabled()))
-            if self._supports_lighting_v2:   #add lighing_v2 API if it is supported
+            if self._supports_lighting_v2 and self._wanted_by(LIGHT):   #add lighing_v2 API if it is supported
                 coros.append(asyncio.ensure_future(self.client.async_get_lighting_v2()))
 
 
@@ -495,16 +1018,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if result is not None:
                     data.update(result)
 
-            if self.supports_security_light() or self.is_flood_light():
+            if self._supports_ptz_position:
+                self._preset_position = data.get("status.PresetID", "0") or "0"
+
+            # Only if it was not already fetched above: on a camera that both
+            # supports the v2 API and reports a security light, this was being
+            # requested twice on every poll.
+            if ((self.supports_security_light() or self.is_flood_light())
+                    and not self._supports_lighting_v2 and self._wanted_by(LIGHT)):
                 light_v2 = await self.client.async_get_lighting_v2()
                 if light_v2 is not None:
                     data.update(light_v2)
 
+            async_record_host_success(self.hass, self._address)
+            self._restore_poll_interval()
             return data
         except Exception as exception:
             _LOGGER.warning("Failed to sync device state for %s. See README to enable debug logs to get full exception",
                             self._address)
             _LOGGER.debug("Failed to sync device state for %s", self._address, exc_info=exception)
+            consecutive = async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
+            self._back_off_poll_interval(consecutive)
             raise UpdateFailed() from exception
 
     def on_receive_vto_event(self, event: dict):
@@ -600,50 +1134,46 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             'name': 'Cam8', 'Code': 'CrossLineDetection', 'action': 'Start', 'index': '0', 'data': {'Class': 'Normal', 'DetectLine': [[18, 4098], [8155, 5549]], 'Direction':      'RightToLeft', 'EventSeq': 40, 'FrameSequence': 549073, 'GroupID': 40, 'Mark': 0, 'Name': 'Rule1', 'Object': {'Action': 'Appear', 'BoundingBox': [4816, 4552, 5248, 5272], 'Center': [5032, 4912], 'Confidence': 0, 'FrameSequence': 0, 'ObjectID': 542, 'ObjectType': 'Unknown', 'RelativeID': 0, 'Source': 0.0, 'Speed': 0, 'SpeedTypeInternal': 0}, 'PTS': 42986015370.0, 'RuleId': 1, 'Source': 51190936.0, 'Track': None, 'UTC': 1620477656, 'UTCMS': 180}
         }
         """
-        data = data_bytes.decode("utf-8", errors="ignore")
-        events = parse_event(data)
-
-        if len(events) == 0:
-            return
-
-        _LOGGER.debug(f"Events received from {self.get_address()} on channel {channel}: {events}")
-
-        for event in events:
+        for event in parse_event(data_bytes.decode("utf-8", errors="ignore")):
             index = 0
             if "index" in event:
                 try:
                     index = int(event["index"])
                 except ValueError:
                     index = 0
+            if index == self._channel:
+                self.handle_event(event)
 
-            # This is a short term fix. Right now for NVRs this integration creates a thread per channel to listen to events. Every thread gets the same response. We need to
-            # discard events not for this channel. Longer term work should create only a single thread per channel.
-            if index != self._channel:
-                continue
+    def handle_event(self, event: dict):
+        """Handle one event the host stream has decided belongs to this channel."""
+        _LOGGER.debug(
+            "Event received from %s on channel %s: %s",
+            self.get_address(),
+            self._channel,
+            event,
+        )
 
-            # Put the vent on the HA event bus
-            event["name"] = self.get_device_name()
-            event["DeviceName"] = self.get_device_name()
-            self.hass.bus.fire("dahua_event_received", event)
+        # Put the event on the HA event bus
+        event["name"] = self.get_device_name()
+        event["DeviceName"] = self.get_device_name()
+        self.hass.bus.fire("dahua_event_received", event)
 
-            # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
-            # We'll reset it to 0 when the event stops.
-            # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
+        # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
+        # We'll reset it to 0 when the event stops.
+        # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
 
-            # This is the event code, example: VideoMotion, CrossLineDetection, etc
-            event_names = self.translate_event_code(event)
-
-            for event_name in event_names:
-                event_key = self.get_event_key(event_name)
-                listener = self._dahua_event_listeners.get(event_key)
-                if listener is not None:
-                    action = event["action"]
-                    if action == "Start":
-                        self._dahua_event_timestamp[event_key] = int(time.time())
-                        listener()
-                    elif action == "Stop":
-                        self._dahua_event_timestamp[event_key] = 0
-                        listener()
+        # This is the event code, example: VideoMotion, CrossLineDetection, etc
+        for event_name in self.translate_event_code(event):
+            event_key = self.get_event_key(event_name)
+            listener = self._dahua_event_listeners.get(event_key)
+            if listener is not None:
+                action = event.get("action")
+                if action == "Start":
+                    self._dahua_event_timestamp[event_key] = int(time.time())
+                    listener()
+                elif action == "Stop":
+                    self._dahua_event_timestamp[event_key] = 0
+                    listener()
 
     def translate_event_code(self, event: dict):
         """
@@ -697,6 +1227,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         event_key = self.get_event_key(event_name)
         self._dahua_event_listeners[event_key] = listener
 
+    def supports_disarming_linkage(self) -> bool:
+        """Whether the device answered the disarming linkage read during setup."""
+        return self._supports_disarming_linkage
+
     def supports_siren(self) -> bool:
         """
         Returns true if this camera has a siren. For example, the IPC-HDW3849HP-AS-PV does
@@ -704,6 +1238,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         m = self.model.upper()
         return "-AS-PV" in m or "L46N" in m or m.startswith("W452ASD")
+
+    def supports_nvr_active_deterrence(self) -> bool:
+        """Return whether NVR active-deterrence entities were explicitly enabled."""
+        return self._nvr_active_deterrence
 
     def supports_security_light(self) -> bool:
         """
@@ -774,12 +1312,30 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ Returns true if event notifications is enable """
         return self.data.get("table.DisableEventNotify.Enable", "").lower() == "false"
 
+    def _smart_motion_row(self):
+        """This channel's row in the SmartMotionDetect table, or None.
+
+        SmartMotionDetect is a host-wide read that returns a row per channel,
+        and the rows are sparse: a device only reports the channels that can
+        actually do it. The row is therefore the per-channel capability signal
+        as well as the state -- measured on an NVR, disabling it leaves the row
+        in place reading false, and writing a row that does not exist is
+        accepted with 200 and silently discarded.
+
+        Both the capability check and the state read go through here so they
+        cannot disagree about which row belongs to this channel.
+        """
+        value = self.data.get("table.SmartMotionDetect[{0}].Enable".format(self._channel))
+        if value is None:
+            # A single camera reports one row, and that row is row 0.
+            value = self.data.get("table.SmartMotionDetect[0].Enable")
+        return value
+
     def is_smart_motion_detection_enabled(self) -> bool:
         """ Returns true if smart motion detection is enabled """
         if self.supports_smart_motion_detection_amcrest():
             return self.data.get("table.VideoAnalyseRule[0][0].Enable", "").lower() == "true"
-        else:
-            return self.data.get("table.SmartMotionDetect[0].Enable", "").lower() == "true"
+        return (self._smart_motion_row() or "").lower() == "true"
 
     def is_siren_on(self) -> bool:
         """ Returns true if the camera siren is on """
@@ -800,6 +1356,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_firmware_version(self) -> str:
         """ returns the device firmware e.g. """
         return self.data.get("version")
+
+    def get_device_serial_number(self) -> str:
+        """The serial the device reports, without the channel suffix.
+
+        get_serial_number below appends the channel so that every entry on an
+        NVR gets its own entity keys. That composite is not a serial number and
+        should not be shown to anyone as one.
+        """
+        return self._serial_number
 
     def get_serial_number(self) -> str:
         """ returns the device serial number. This is unique per device """
@@ -856,6 +1421,66 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Return true if the security light is on. This is the red/blue flashing light"""
         return self.get_status_value("WhiteLight").lower() == "on"
 
+    def read_profile_mode(self, mode_data: dict) -> str:
+        """Picks this channel's day/night profile out of the VideoInMode table.
+
+        The profile chooses which Lighting[channel][profile] the light is read
+        from and written to, so getting it wrong means commands are accepted and
+        nothing lights up.
+
+        Three device behaviours have to coexist here, and two of them disagree
+        about which field is authoritative:
+
+        - **General profile management** (`Config[0]` = 2). One profile covers
+          all conditions and it is profile 2. `ConfigEx` is still present and
+          still echoes day/night, but it selects nothing -- preferring it sent
+          every write to the day profile while the camera rendered from 2 (#605).
+        - **IL series dual smart light.** The profile is chosen by the `ConfigEx`
+          string; `Config[0]` stays a static 0 whichever profile is live, so
+          reading it left the illuminator permanently tracking day (#582).
+        - **Everything else.** `Config[0]` is the profile.
+
+        The read is host-wide -- getConfig&name=VideoInMode returns a row per
+        channel -- so an NVR channel has to take its own row, falling back to
+        row 0, which is all a single-channel camera returns.
+        """
+        def field(name):
+            value = mode_data.get("table.VideoInMode[{0}].{1}".format(self._channel, name))
+            if value is None:
+                value = mode_data.get("table.VideoInMode[0].{0}".format(name))
+            return value
+
+        config = field("Config[0]")
+        config_ex = field("ConfigEx")
+
+        if config == "2":
+            return "2"
+        if config_ex is not None:
+            # Only act on a value we recognise. Treating anything else as day
+            # would override a Config[0] that is very likely right, for a
+            # string we do not understand.
+            named = str(config_ex).strip().lower()
+            if named == "night":
+                return "1"
+            if named == "day":
+                return "0"
+        return config or "0"
+
+    async def async_detect_lighting_support(self) -> bool:
+        """Does this channel have an infrared light?
+
+        Judged by what comes back, not by an exception. async_get_config
+        catches aiohttp.ClientResponseError and returns {}, so an
+        exception-only probe could never fail: every device was marked as
+        having an IR light and then fetched Lighting[channel][mode] on every
+        poll, forever. The profile mode probe reads its result the same way.
+        """
+        try:
+            conf = await self.client.async_get_config_lighting(self._channel, self._profile_mode)
+        except PROBE_FAILED:
+            return False
+        return len(conf) > 0
+
     def get_profile_mode(self) -> str:
         # profile_mode 0=day, 1=night, 2=scene
         return self._profile_mode
@@ -863,6 +1488,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_channel(self) -> int:
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
         return self._channel
+
+    def is_nvr_channel(self) -> bool:
+        """Return whether this entry represents a camera channel on an NVR."""
+        return self._channel > 0 or "NVR" in self.model.upper()
 
     def get_channel_number(self) -> int:
         """returns the channel number of this camera"""
@@ -881,8 +1510,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._max_streams
 
     def supports_smart_motion_detection(self) -> bool:
-        """ True if smart motion detection is supported"""
-        return self._supports_smart_motion_detection
+        """True if *this channel* can do smart motion detection.
+
+        The probe behind _supports_smart_motion_detection fetches the whole
+        host-wide table with no channel argument, so it succeeds for every
+        channel of an NVR whether or not that channel has the feature. On a
+        sixteen channel recorder measured for this, ten channels had cameras
+        and two had rows -- the other eight carried a switch that was
+        permanently off and whose writes the device accepted and ignored.
+
+        The row is the real signal, and it is already in data we fetch.
+        """
+        if not self._supports_smart_motion_detection:
+            return False
+        return self._smart_motion_row() is not None
 
     def supports_smart_motion_detection_amcrest(self) -> bool:
         """ True if smart motion detection is supported for an amcrest device"""
@@ -903,7 +1544,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Handle removal of an entry."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if coordinator is None:
+        # Setup may have failed before the coordinator was registered, or a
+        # previous unload may already have removed it. Treat that as unloaded
+        # so an options-triggered reload can continue cleanly.
+        return True
+
     await coordinator.async_stop()
     unloaded = all(
         await asyncio.gather(
@@ -917,10 +1564,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id)
 
+    # If that was the last entry for this host, withdraw anything we said
+    # about it rather than leaving an orphaned card in Repairs.
+    address = normalize_address(entry.data.get(CONF_ADDRESS))
+    if not _entries_for_address(hass, address):
+        _HOST_FAILURES.pop(address, None)
+        ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
+        ir.async_delete_issue(
+            hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)
+        )
+
     return unloaded
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
+    await hass.config_entries.async_reload(entry.entry_id)

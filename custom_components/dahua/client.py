@@ -2,8 +2,8 @@
 import logging
 import socket
 import asyncio
+import time
 import aiohttp
-import async_timeout
 
 from .digest import DigestAuth
 from .rpc2 import DahuaRpc2Client
@@ -18,6 +18,140 @@ TIMEOUT_SECONDS = 20
 # that has delivered nothing for a comfortable multiple of it has stalled.
 EVENT_STREAM_HEARTBEAT_SECONDS = 5
 EVENT_STREAM_READ_TIMEOUT_SECONDS = 60
+
+# One NVR carries a config entry per channel, and every entry sets itself up at
+# the same moment. Dahua's HTTP server is small: a dozen simultaneous CGI calls
+# can wedge it, and because the entries then fail together they retry together,
+# so the burst repeats and the device never recovers. Cap concurrent requests
+# per host, shared across every client for that address.
+MAX_CONCURRENT_REQUESTS_PER_HOST = 2
+_HOST_LIMITS: dict = {}
+
+
+def _host_limiter(address: str) -> asyncio.Semaphore:
+    """Returns the semaphore shared by every client talking to this address."""
+    limiter = _HOST_LIMITS.get(address)
+    if limiter is None:
+        limiter = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS_PER_HOST)
+        _HOST_LIMITS[address] = limiter
+    return limiter
+
+
+# The digest challenge a device hands out is not per connection: any request
+# with the right credentials can use it. Eleven config entries for one NVR were
+# each taking a 401 to get their own copy of the same challenge, at exactly the
+# moment the device is least able to spare the round trips.
+#
+# Sharing it also fixes the nonce count. Digest asks the client to send a
+# strictly increasing nc for a given nonce; eleven clients each counting from
+# one against the same nonce is what replay protection exists to reject.
+_HOST_DIGEST_STATE: dict = {}
+
+
+def _digest_state(address: str, username: str) -> dict:
+    """The digest state shared by every client for this host and user.
+
+    Keyed by user as well as host because the response digest is built from the
+    credentials, and entries for one NVR need not share them.
+    """
+    key = (address, username)
+    state = _HOST_DIGEST_STATE.get(key)
+    if state is None:
+        state = _HOST_DIGEST_STATE[key] = {}
+    return state
+
+
+# Most of what a coordinator reads every poll carries no channel argument:
+# MotionDetect, DisableLinkage, DisableEventNotify, SmartMotionDetect,
+# Lighting_V2, VideoInMode, coaxialControlIO and ptz.cgi are all host-wide. An
+# NVR with eleven config entries therefore asks eleven times for byte-identical
+# answers, every cycle. Share them.
+#
+# The key is the URL, so nothing has to be classified by hand: a read that does
+# carry a channel has a different URL per channel and is never shared. Only
+# reads are cached; anything else drops the host's entries, because a write is
+# how these values change.
+
+# How long a shared read answers for. Two lifetimes, because the reads fall
+# into two kinds.
+#
+# Status reads change on their own: where a PTZ camera is pointing, whether the
+# siren is sounding, which day/night profile the device has switched itself to.
+# Those have to be polled, so they get a lifetime short enough to only cover
+# one poll's fan-out.
+#
+# Config reads change only when something writes them -- and a write drops this
+# host's entries, so a change made through Home Assistant is reflected at once.
+# Re-asking the device every poll buys nothing except load. On hardware
+# measured for this, each of those calls costs two TCP connections, two HTTP
+# requests and one refused login in the device's own log, because the device
+# answers Connection: close and reissues its digest nonce every time. A camera
+# with no dashboard open was spending most of its request budget re-reading
+# settings nobody had touched.
+#
+# The cost is that a change made in the Dahua app or web UI, rather than
+# through Home Assistant, can take up to this long to appear.
+HOST_CACHE_TTL_SECONDS = 5
+CONFIG_CACHE_TTL_SECONDS = 300
+
+# getConfig is a settings read. getStatus and the rest report live state.
+CONFIG_READ_MARKER = "action=getConfig"
+_HOST_CACHE: dict = {}
+
+
+def _cache_lifetime(url: str) -> int:
+    """How long this URL's answer stays good for."""
+    return CONFIG_CACHE_TTL_SECONDS if CONFIG_READ_MARKER in url else HOST_CACHE_TTL_SECONDS
+
+
+# CGI reads are "action=getSomething". Everything else -- setConfig, reboot,
+# ptz control, door open -- is a write. Unrecognised is treated as a write,
+# which is the safe way round.
+READ_ACTION_PREFIX = "action=get"
+
+
+def _is_read(url: str) -> bool:
+    return READ_ACTION_PREFIX in url
+
+
+def clear_host_cache(address: str) -> None:
+    """Drop every shared read for this host.
+
+    Called on every write, since a write is the reason a value the device
+    reports would change, and when the last entry for the host goes away.
+    """
+    for key in [k for k in _HOST_CACHE if k[0] == address]:
+        del _HOST_CACHE[key]
+
+
+class _SharedRead:
+    """One read of one URL, shared by every entry on the host that wants it.
+
+    While the request is in flight, later callers wait on the same task rather
+    than issuing their own. Once it lands, it answers again for the TTL.
+    """
+
+    __slots__ = ("task", "expires_at")
+
+    def __init__(self, task: asyncio.Task) -> None:
+        self.task = task
+        self.expires_at = None  # stamped when the request lands
+
+    def is_usable(self, now: float) -> bool:
+        if not self.task.done():
+            return True
+        return self.expires_at is not None and now < self.expires_at
+
+
+class EventStreamClosed(Exception):
+    """The device ended the event stream.
+
+    A long poll that returns is a failure, not a result: the connection is
+    meant to stay open until we recycle it. A device that refuses
+    action=attach by answering 200 and closing would otherwise leave no trace
+    anywhere.
+    """
+
 
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
@@ -43,11 +177,12 @@ class DahuaClient:
     ) -> None:
         self._username = username
         self._password = password
-        # One digest challenge shared by every request this client makes, so a
-        # call doesn't have to take a 401 before it can authenticate.
-        self._digest_state = {}
         # Strip trailing slashes from address to prevent malformed URLs like http://host/:80
         self._address = address.rstrip('/')
+        # One digest challenge shared by every request to this host, so a call
+        # doesn't have to take a 401 before it can authenticate -- and neither
+        # does the next config entry for the same NVR.
+        self._digest_state = _digest_state(self._address, username)
         self._session = session
         self._port = port
         self._rtsp_port = rtsp_port
@@ -56,6 +191,13 @@ class DahuaClient:
         if use_https is None:
             use_https = int(port) == 443
         self._use_https = use_https
+        # Keyed by address so every entry for one NVR shares a single budget.
+        self._host_limit = _host_limiter(self._address)
+        self._rpc2_session_instance = None
+        # True once this device has failed to report a serial number and we have had
+        # to derive its identity from the connection details instead. That derivation
+        # includes the password, so the identity changes if the password does.
+        self.identity_derived_from_credentials = False
         protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, self._address, port)
 
@@ -105,6 +247,7 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSystemInfo")
         except aiohttp.ClientResponseError as e:
+            self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"serialNumber": unique_cam_id}
@@ -137,6 +280,7 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getMachineName")
         except aiohttp.ClientResponseError as e:
+            self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"name": unique_cam_id}
@@ -162,7 +306,7 @@ class DahuaClient:
         # If we can't fetch, just assume 2 since that's pretty standard
         return 3
 
-    async def async_get_coaxial_control_io_status(self) -> dict:
+    async def async_get_coaxial_control_io_status(self, channel: int = 1) -> dict:
         """
         async_get_coaxial_control_io_status returns the the current state of the speaker and white light.
         Note that the "white light" here seems to also work for cameras that have the red/blue flashing alarm light
@@ -173,7 +317,7 @@ class DahuaClient:
         status.status.Speaker=Off
         status.status.WhiteLight=Off
         """
-        url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel=1"
+        url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel={channel}".format(channel=channel)
         return await self.get(url)
 
     async def async_get_lighting_v2(self) -> dict:
@@ -205,6 +349,7 @@ class DahuaClient:
         try:
             return await self.get(url)
         except aiohttp.ClientResponseError as e:
+            self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"table.General.MachineName": unique_cam_id}
@@ -293,9 +438,15 @@ class DahuaClient:
         )
         return await self.get(url, True)
 
-    async def async_enabled_smart_motion_detection(self, enabled: bool):
-        """ Enables or disabled smart motion detection for Dahua devices (doesn't work for Amcrest)"""
-        url = "/cgi-bin/configManager.cgi?action=setConfig&SmartMotionDetect[0].Enable={0}".format(str(enabled).lower())
+    async def async_enabled_smart_motion_detection(self, channel: int, enabled: bool):
+        """ Enables or disabled smart motion detection for Dahua devices (doesn't work for Amcrest)
+
+        SmartMotionDetect is indexed by channel, like MotionDetect. Writing to
+        [0] from every channel of an NVR set channel one's option no matter
+        which camera the switch belonged to.
+        """
+        url = "/cgi-bin/configManager.cgi?action=setConfig&SmartMotionDetect[{0}].Enable={1}".format(
+            channel, str(enabled).lower())
         return await self.get(url, True)
 
     async def async_set_light_global_enabled(self, enabled: bool):
@@ -359,49 +510,66 @@ class DahuaClient:
             cookie_jar=aiohttp.CookieJar(unsafe=True),
         )
 
+    def _rpc2_session(self) -> aiohttp.ClientSession:
+        """Returns this client's RPC2 session, building it on first use.
+
+        Sessions are meant to be long lived. Creating one per call also built a
+        connector and a connection pool each time, and threw them away again.
+        """
+        if self._rpc2_session_instance is None or self._rpc2_session_instance.closed:
+            self._rpc2_session_instance = self._new_rpc2_session()
+        return self._rpc2_session_instance
+
+    async def close(self) -> None:
+        """Releases anything this client owns. Safe to call more than once."""
+        session = self._rpc2_session_instance
+        self._rpc2_session_instance = None
+        if session is not None and not session.closed:
+            await session.close()
+
     async def async_get_ptz_preset_ids(self, channel_index: int) -> list[int]:
         """Read the real preset IDs exposed by Web5.0 RPC2."""
-        async with self._new_rpc2_session() as session:
-            rpc2 = DahuaRpc2Client(
-                self._username, self._password, self._address, self._port,
-                self._rtsp_port, session, self._use_https
-            )
+        session = self._rpc2_session()
+        rpc2 = DahuaRpc2Client(
+            self._username, self._password, self._address, self._port,
+            self._rtsp_port, session, self._use_https
+        )
+        try:
+            async with asyncio.timeout(5):
+                presets = await rpc2.async_get_ptz_presets(channel_index)
+            ids = self.parse_ptz_preset_ids(presets)
+            if presets and not ids:
+                raise ValueError("Dahua RPC2 preset response contains no valid IDs")
+            return ids
+        finally:
             try:
-                async with async_timeout.timeout(5):
-                    presets = await rpc2.async_get_ptz_presets(channel_index)
-                ids = self.parse_ptz_preset_ids(presets)
-                if presets and not ids:
-                    raise ValueError("Dahua RPC2 preset response contains no valid IDs")
-                return ids
-            finally:
-                try:
-                    async with async_timeout.timeout(3):
-                        logout_ok = await rpc2.logout()
-                    if not logout_ok:
-                        _LOGGER.debug(
-                            "RPC2 logout reported failure after preset discovery"
-                        )
-                except Exception:
-                    _LOGGER.debug("RPC2 logout failed after preset discovery", exc_info=True)
+                async with asyncio.timeout(3):
+                    logout_ok = await rpc2.logout()
+                if not logout_ok:
+                    _LOGGER.debug(
+                        "RPC2 logout reported failure after preset discovery"
+                    )
+            except Exception:
+                _LOGGER.debug("RPC2 logout failed after preset discovery", exc_info=True)
 
     async def async_goto_preset_rpc2(self, channel: int, position: int) -> dict:
         """Go to a real preset through the hardware-validated RPC2 contract."""
-        async with self._new_rpc2_session() as session:
-            rpc2 = DahuaRpc2Client(
-                self._username, self._password, self._address, self._port,
-                self._rtsp_port, session, self._use_https
-            )
+        session = self._rpc2_session()
+        rpc2 = DahuaRpc2Client(
+            self._username, self._password, self._address, self._port,
+            self._rtsp_port, session, self._use_https
+        )
+        try:
+            async with asyncio.timeout(5):
+                return await rpc2.async_goto_preset_position(channel, position)
+        finally:
             try:
-                async with async_timeout.timeout(5):
-                    return await rpc2.async_goto_preset_position(channel, position)
-            finally:
-                try:
-                    async with async_timeout.timeout(3):
-                        logout_ok = await rpc2.logout()
-                    if not logout_ok:
-                        _LOGGER.debug("RPC2 logout reported failure after GotoPreset")
-                except Exception:
-                    _LOGGER.debug("RPC2 logout failed after GotoPreset", exc_info=True)
+                async with asyncio.timeout(3):
+                    logout_ok = await rpc2.logout()
+                if not logout_ok:
+                    _LOGGER.debug("RPC2 logout reported failure after GotoPreset")
+            except Exception:
+                _LOGGER.debug("RPC2 logout failed after GotoPreset", exc_info=True)
 
     async def async_get_light_global_enabled(self) -> dict:
         """
@@ -707,6 +875,18 @@ class DahuaClient:
         _LOGGER.debug("Setting coaxial control state to %s: %s", io, url)
         return await self.get(url)
 
+    async def async_set_nvr_coaxial_control_state(
+        self, channel: int, dahua_type: int, enabled: bool
+    ) -> dict:
+        """Set an NVR-connected camera's coaxial deterrence state."""
+        io = 1 if enabled else 2
+        url = (
+            "/cgi-bin/coaxialControlIO.cgi?action=control&channel={channel}"
+            "&info[0].Type={dahua_type}&info[0].IO={io}&info[0].TriggerMode=2"
+        ).format(channel=channel, dahua_type=dahua_type, io=io)
+        _LOGGER.debug("Setting NVR coaxial control state to %s: %s", io, url)
+        return await self.get(url)
+
     async def async_set_disarming_linkage(self, channel: int, enabled: bool) -> dict:
         """
         async_set_disarming_linkage will set the camera's disarming linkage (Event -> Disarming in the UI)
@@ -857,30 +1037,36 @@ class DahuaClient:
         codes = ",".join(events)
         url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat={2}".format(
             self._base, codes, EVENT_STREAM_HEARTBEAT_SECONDS)
-        if self._username is not None and self._password is not None:
-            response = None
+        if self._username is None or self._password is None:
+            # Returning quietly here spun a silent sixty second retry loop that
+            # never did anything and never said so.
+            raise EventStreamClosed(
+                "Cannot subscribe to events on %s without credentials" % self._address)
 
-            try:
-                # A long poll must not inherit the session's default total
-                # timeout, which tears a healthy stream down every 5 minutes.
-                # Bound it on read instead, so a socket that stops delivering
-                # is detected but one that keeps heartbeating is left alone.
-                timeout = aiohttp.ClientTimeout(
-                    total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS)
-                auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
-                response = await auth.request("GET", url, timeout=timeout)
-                response.raise_for_status()
+        response = None
 
-                # https://docs.aiohttp.org/en/stable/streams.html
-                async for data, _ in response.content.iter_chunks():
-                    on_receive(data, channel)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exception:
-                _LOGGER.debug("Event stream ended: %s", exception)
-            finally:
-                if response is not None:
-                    response.close()
+        try:
+            # A long poll must not inherit the session's default total
+            # timeout, which tears a healthy stream down every 5 minutes.
+            # Bound it on read instead, so a socket that stops delivering
+            # is detected but one that keeps heartbeating is left alone.
+            timeout = aiohttp.ClientTimeout(
+                total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS)
+            auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
+            response = await auth.request("GET", url, timeout=timeout)
+            response.raise_for_status()
+
+            # https://docs.aiohttp.org/en/stable/streams.html
+            async for data, _ in response.content.iter_chunks():
+                on_receive(data, channel)
+        finally:
+            if response is not None:
+                response.close()
+
+        # Falling out of the loop means the device closed the stream on us.
+        # It raises no exception, so without this the caller cannot tell a
+        # refused subscription from a healthy one.
+        raise EventStreamClosed("Event stream to %s closed by the device" % self._address)
 
     @staticmethod
     async def parse_dahua_api_response(data: str) -> dict:
@@ -903,9 +1089,31 @@ class DahuaClient:
                 data_dict[parts[0]] = line
         return data_dict
 
+    async def async_probe_snapshot(self, channel_number: int) -> None:
+        """Checks the snapshot endpoint answers for a channel, without fetching the image.
+
+        Used only to work out how this device numbers its channels, so the JPEG
+        body is never needed. Reading it would pull a full-resolution image per
+        entry at setup, which is the worst possible moment on a busy NVR.
+        Raises the same errors async_get_snapshot would.
+        """
+        url = self._base + "/cgi-bin/snapshot.cgi?channel={0}".format(channel_number)
+        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            response = None
+            try:
+                auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
+                response = await auth.request("GET", url)
+                response.raise_for_status()
+            finally:
+                if response is not None:
+                    # close() rather than read(): drops the body without transferring it
+                    response.close()
+
     async def get_bytes(self, url: str) -> bytes:
         """Get information from the API. This will return the raw response and not process it"""
-        async with async_timeout.timeout(TIMEOUT_SECONDS):
+        # The timeout covers the wait for a slot as well as the request, so a
+        # busy host sheds load instead of building an unbounded queue.
+        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
             response = None
             try:
                 auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
@@ -918,10 +1126,47 @@ class DahuaClient:
                     response.close()
 
     async def get(self, url: str, verify_ok=False) -> dict:
-        """Get information from the API."""
+        """Get information from the API, sharing the read across this host.
+
+        Two entries for one NVR asking the same question at the same moment get
+        one round trip between them, and a repeat inside the TTL gets none.
+        """
+        if not _is_read(url):
+            clear_host_cache(self._address)
+            return await self._request(url, verify_ok)
+
+        # Credentials are part of the key: entries for one host may be
+        # configured with different users, and a successful read is not
+        # otherwise scoped to who made it.
+        key = (self._address, self._username, url)
+        now = time.monotonic()
+        entry = _HOST_CACHE.get(key)
+        if entry is None or not entry.is_usable(now):
+            # Registering before the request starts is what makes this work:
+            # the per-host limiter queues callers inside _request, so by the
+            # time the first one has a slot the rest are already sharing it.
+            entry = _SharedRead(asyncio.ensure_future(self._request(url, verify_ok)))
+            _HOST_CACHE[key] = entry
+
+        # Shielded so that one entry's cancelled refresh -- a reload, a
+        # timeout -- does not take the read away from the others.
+        result = await asyncio.shield(entry.task)
+
+        # A read is only published once it lands. A failure leaves the expiry
+        # unset, so is_usable rejects it and the next poll asks the device
+        # again rather than being told no for the rest of the TTL. And a write
+        # that dropped this entry while it was in flight has already replaced
+        # it, so it settles for whoever is waiting without going back in.
+        if _HOST_CACHE.get(key) is entry and entry.expires_at is None:
+            entry.expires_at = time.monotonic() + _cache_lifetime(url)
+
+        return dict(result)
+
+    async def _request(self, url: str, verify_ok=False) -> dict:
+        """Make the request. One caller per shared read reaches here."""
         url = self._base + url
         try:
-            async with async_timeout.timeout(TIMEOUT_SECONDS):
+            async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
                 response = None
                 try:
                     auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
